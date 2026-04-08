@@ -1,0 +1,15 @@
+[project]
+name = "punkathon-workspace"
+version = "0.1.0"
+description = "Workspace root for the Punkathon backend and frontend"
+requires-python = ">=3.12"
+dependencies = ["punkathon-agent"]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+punkathon-agent = { workspace = true }
+
+[tool.uv.workspace]
+members = ["backend"]
