@@ -22,7 +22,9 @@ interface SidebarProps {
   onClose: () => void;
   onOpenEstrattoConto: () => void;
   onGenerateInsights: () => void;
+  onDeleteAllTransactions: () => Promise<void>;
   isGeneratingInsights: boolean;
+  isDeletingAllTransactions: boolean;
   themeMode: 'light' | 'dark';
   onThemeChange: (themeMode: 'light' | 'dark') => void;
 }
@@ -40,13 +42,16 @@ export function Sidebar({
   onClose,
   onOpenEstrattoConto,
   onGenerateInsights,
+  onDeleteAllTransactions,
   isGeneratingInsights,
+  isDeletingAllTransactions,
   themeMode,
   onThemeChange,
 }: SidebarProps) {
   const [isEditingGoal, setIsEditingGoal] = useState(false);
   const [goalInput, setGoalInput] = useState(userGoal || '');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
 
   const [isEditingStipendio, setIsEditingStipendio] = useState(false);
   const [stipendioInput, setStipendioInput] = useState(stipendio === null ? '' : stipendio.toString());
@@ -58,6 +63,12 @@ export function Sidebar({
   useEffect(() => {
     setStipendioInput(stipendio === null ? '' : stipendio.toString());
   }, [stipendio]);
+
+  useEffect(() => {
+    if (!isSettingsOpen) {
+      setSettingsError(null);
+    }
+  }, [isSettingsOpen]);
 
   const formatCurrency = (value: number | null) => {
     if (value === null) {
@@ -89,6 +100,24 @@ export function Sidebar({
   const handleGenerateInsights = () => {
     onGenerateInsights();
     onClose();
+  };
+
+  const handleDeleteAllTransactions = async () => {
+    const confirmed = window.confirm(
+      'Vuoi davvero cancellare tutte le transazioni? Questa azione non si puo\' annullare.',
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setSettingsError(null);
+
+    try {
+      await onDeleteAllTransactions();
+      setIsSettingsOpen(false);
+    } catch (error) {
+      setSettingsError(error instanceof Error ? error.message : 'Cancellazione non riuscita.');
+    }
   };
 
   return (
@@ -296,6 +325,35 @@ export function Sidebar({
               />
             </div>
           </div>
+
+          <div className="rounded-xl border border-red-200 bg-red-50 p-4 dark:border-red-900/50 dark:bg-red-950/20">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-sm font-semibold text-red-800 dark:text-red-200">
+                  Cancella tutte le transazioni
+                </div>
+                <p className="mt-1 text-xs text-red-700 dark:text-red-300">
+                  Elimina tutti i movimenti bancari del tuo account e ricarica subito la pagina.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => void handleDeleteAllTransactions()}
+                disabled={isDeletingAllTransactions}
+                className="inline-flex min-w-32 items-center justify-center gap-2 rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isDeletingAllTransactions ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                {isDeletingAllTransactions ? 'Cancellazione...' : 'Cancella tutto'}
+              </button>
+            </div>
+          </div>
+
+          {settingsError ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-300">
+              {settingsError}
+            </div>
+          ) : null}
         </DialogContent>
       </Dialog>
     </>

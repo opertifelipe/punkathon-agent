@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
@@ -12,6 +13,7 @@ from punkathon_agent.services.ai_insights import (
     SidebarInsightsLLMOutput,
     _last_three_month_window,
     _normalize_generated_insights,
+    generate_goal_based_sidebar_insights,
 )
 
 
@@ -50,6 +52,40 @@ class AiInsightsServiceTests(unittest.TestCase):
         self.assertEqual(sum(1 for item in insights if item["type"] == "success"), 3)
         self.assertEqual(sum(1 for item in insights if item["type"] == "warning"), 3)
 
+    @patch("punkathon_agent.services.ai_insights._invoke_sidebar_insights_model")
+    @patch("punkathon_agent.services.ai_insights._build_recent_context")
+    @patch("punkathon_agent.services.ai_insights._fetch_movements_between")
+    @patch("punkathon_agent.services.ai_insights._fetch_all_movements")
+    @patch("punkathon_agent.services.ai_insights._sync_budget_fields")
+    @patch("punkathon_agent.services.ai_insights._get_or_create_user_profile")
+    @patch("punkathon_agent.services.ai_insights.get_session")
+    @patch("punkathon_agent.services.ai_insights.create_database")
+    def test_generate_goal_based_sidebar_insights_passes_user_id_to_fetches(
+        self,
+        _mock_create_database: MagicMock,
+        mock_get_session: MagicMock,
+        mock_get_profile: MagicMock,
+        _mock_sync_budget_fields: MagicMock,
+        mock_fetch_all_movements: MagicMock,
+        mock_fetch_movements_between: MagicMock,
+        mock_build_recent_context: MagicMock,
+        mock_invoke_model: MagicMock,
+    ) -> None:
+        fake_session = object()
+        mock_get_session.return_value.__enter__.return_value = fake_session
+        mock_get_profile.return_value = MagicMock()
+        mock_fetch_all_movements.return_value = []
+        mock_fetch_movements_between.return_value = []
+        mock_build_recent_context.return_value = {"ok": True}
+        mock_invoke_model.return_value = SidebarInsightsLLMOutput()
+
+        generate_goal_based_sidebar_insights(reference_date=date(2026, 4, 8), user_id=123)
+
+        mock_get_profile.assert_called_once_with(fake_session, user_id=123)
+        mock_fetch_all_movements.assert_called_once_with(fake_session, user_id=123)
+        mock_fetch_movements_between.assert_called_once()
+        self.assertEqual(mock_fetch_movements_between.call_args.kwargs["user_id"], 123)
+
 
 class AiInsightsApiTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -75,13 +111,29 @@ class AiInsightsApiTests(unittest.TestCase):
             ],
         }
 
-        response = self.client.post("/insights/generate")
+        signup_response = self.client.post(
+            "/auth/signup",
+            json={
+                "email": f"insights-{uuid4().hex[:8]}@example.com",
+                "nome": "Iris",
+                "cognome": "Test",
+                "eta": 23,
+                "password": "password123",
+            },
+        )
+        token = signup_response.json()["access_token"]
+
+        response = self.client.post(
+            "/insights/generate",
+            headers={"Authorization": f"Bearer {token}"},
+        )
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["window_start"], "2026-02-01")
         self.assertEqual(len(body["insights"]), 1)
-        mocked_generate.assert_called_once_with()
+        self.assertEqual(mocked_generate.call_count, 1)
+        self.assertIn("user_id", mocked_generate.call_args.kwargs)
 
 
 if __name__ == "__main__":

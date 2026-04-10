@@ -68,6 +68,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     conversation: list[dict[str, Any]]
+    reload: bool = False
 
 
 class GeneratedInsight(BaseModel):
@@ -160,3 +161,8 @@ class StatementTransactionWrite(BaseModel):
 class StatementDeleteResponse(BaseModel):
     deleted: bool = True
     movement_id: str = Field(min_length=1)
+
+
+class StatementBulkDeleteResponse(BaseModel):
+    deleted: bool = True
+    deleted_count: int = Field(ge=0)

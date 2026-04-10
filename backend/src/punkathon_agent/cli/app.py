@@ -146,7 +146,7 @@ async def _stream_cli_turn(
         color = REASONING_COLOR if event_type == "reasoning" else ANSWER_COLOR
         typer.secho(content, fg=color, nl=False)
 
-    answer, next_conversation = await run_agent_turn_streaming(
+    answer, next_conversation, _reload = await run_agent_turn_streaming(
         agent,
         conversation,
         user_input,

@@ -1,6 +1,6 @@
 const API_BASE = '/api';
+const AUTH_STORAGE_KEY = 'punkagent-auth-session';
 
-// MIME type supportati dal backend
 const SUPPORTED_MIME_TYPES = new Set([
   'application/pdf',
   'image/gif',
@@ -9,14 +9,37 @@ const SUPPORTED_MIME_TYPES = new Set([
   'image/webp',
 ]);
 
-// ---------------------------------------------------------------------------
-// Tipi
-// ---------------------------------------------------------------------------
-
 export interface ApiAttachment {
   filename: string;
   mime_type: string;
-  base64_data: string; // base64 puro, senza prefisso "data:..."
+  base64_data: string;
+}
+
+export interface AuthUser {
+  id: number;
+  email: string;
+  nome: string;
+  cognome: string;
+  eta: number;
+}
+
+export interface AuthSession {
+  access_token: string;
+  token_type: string;
+  user: AuthUser;
+}
+
+export interface SignupPayload {
+  email: string;
+  nome: string;
+  cognome: string;
+  eta: number;
+  password: string;
+}
+
+export interface SigninPayload {
+  email: string;
+  password: string;
 }
 
 export interface UtenteProfile {
@@ -124,16 +147,96 @@ export interface StatementTransactionPayload {
   categoria: string;
 }
 
+export interface StatementBulkDeleteResponse {
+  deleted: boolean;
+  deleted_count: number;
+}
+
+function isBrowser(): boolean {
+  return typeof window !== 'undefined';
+}
+
+export function getStoredAuthSession(): AuthSession | null {
+  if (!isBrowser()) {
+    return null;
+  }
+
+  const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as AuthSession;
+    if (parsed?.access_token && parsed?.user) {
+      return parsed;
+    }
+  } catch {
+    // ignora sessione corrotta
+  }
+
+  return null;
+}
+
+export function storeAuthSession(session: AuthSession): void {
+  if (!isBrowser()) {
+    return;
+  }
+  window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
+}
+
+export function clearStoredAuthSession(): void {
+  if (!isBrowser()) {
+    return;
+  }
+  window.localStorage.removeItem(AUTH_STORAGE_KEY);
+}
+
+function buildAuthHeaders(headers?: HeadersInit, options: { json?: boolean } = {}): Headers {
+  const { json = false } = options;
+  const merged = new Headers(headers);
+  if (json && !merged.has('Content-Type')) {
+    merged.set('Content-Type', 'application/json');
+  }
+
+  const session = getStoredAuthSession();
+  if (session?.access_token) {
+    merged.set('Authorization', `Bearer ${session.access_token}`);
+  }
+
+  return merged;
+}
+
 async function readErrorDetail(response: Response, fallback: string): Promise<string> {
   try {
-    const payload = await response.json() as { detail?: string };
+    const payload = await response.json() as { detail?: string | Array<{ msg?: string; loc?: unknown[] }> };
     if (typeof payload.detail === 'string' && payload.detail.trim()) {
       return payload.detail;
+    }
+    if (Array.isArray(payload.detail) && payload.detail.length > 0) {
+      return payload.detail
+        .map((e) => e.msg ?? JSON.stringify(e))
+        .join('; ');
     }
   } catch {
     // ignora body non JSON
   }
   return fallback;
+}
+
+async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  return fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: buildAuthHeaders(init?.headers),
+  });
+}
+
+async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await apiFetch(path, init);
+  if (!response.ok) {
+    throw new Error(await readErrorDetail(response, `${init?.method ?? 'GET'} ${path}: ${response.status}`));
+  }
+  return response.json() as Promise<T>;
 }
 
 function formatLocalDateForApi(value: Date): string {
@@ -143,46 +246,47 @@ function formatLocalDateForApi(value: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-// ---------------------------------------------------------------------------
-// Utente
-// ---------------------------------------------------------------------------
+export async function signup(payload: SignupPayload): Promise<AuthSession> {
+  return apiJson<AuthSession>('/auth/signup', {
+    method: 'POST',
+    headers: buildAuthHeaders(undefined, { json: true }),
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function signin(payload: SigninPayload): Promise<AuthSession> {
+  return apiJson<AuthSession>('/auth/signin', {
+    method: 'POST',
+    headers: buildAuthHeaders(undefined, { json: true }),
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchCurrentUser(): Promise<AuthUser> {
+  return apiJson<AuthUser>('/auth/me');
+}
 
 export async function fetchUtente(): Promise<UtenteProfile> {
-  const res = await fetch(`${API_BASE}/utente`);
-  if (!res.ok) throw new Error(`GET /utente: ${res.status}`);
-  return res.json();
+  return apiJson<UtenteProfile>('/utente');
 }
 
 export async function updateUtente(
   data: Partial<Pick<UtenteProfile, 'stipendio_mensile' | 'obiettivo'>>,
 ): Promise<UtenteProfile> {
-  const res = await fetch(`${API_BASE}/utente`, {
+  return apiJson<UtenteProfile>('/utente', {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers: buildAuthHeaders(undefined, { json: true }),
     body: JSON.stringify(data),
   });
-  if (!res.ok) throw new Error(`PATCH /utente: ${res.status}`);
-  return res.json();
 }
-
-// ---------------------------------------------------------------------------
-// Spese settimanali
-// ---------------------------------------------------------------------------
 
 export async function fetchSpeseSettimanali(startDate?: Date): Promise<SpeseSettimanaliResponse> {
-  let url = `${API_BASE}/spese-settimanali`;
+  let url = '/spese-settimanali';
   if (startDate) {
-    const iso = formatLocalDateForApi(startDate);
-    url += `?start_date=${iso}`;
+    url += `?start_date=${formatLocalDateForApi(startDate)}`;
   }
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`GET /spese-settimanali: ${res.status}`);
-  return res.json();
+  return apiJson<SpeseSettimanaliResponse>(url);
 }
-
-// ---------------------------------------------------------------------------
-// Estratto conto
-// ---------------------------------------------------------------------------
 
 export async function fetchStatementPage(filters?: {
   year?: number;
@@ -195,78 +299,57 @@ export async function fetchStatementPage(filters?: {
   if (filters?.week) params.set('week', String(filters.week));
 
   const suffix = params.toString();
-  const url = `${API_BASE}/estratto-conto${suffix ? `?${suffix}` : ''}`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(await readErrorDetail(res, `GET /estratto-conto: ${res.status}`));
-  }
-  return res.json();
+  return apiJson<StatementPageResponse>(`/estratto-conto${suffix ? `?${suffix}` : ''}`);
 }
 
 export async function createStatementTransaction(
   payload: StatementTransactionPayload,
 ): Promise<StatementTransaction> {
-  const res = await fetch(`${API_BASE}/estratto-conto/movimenti`, {
+  return apiJson<StatementTransaction>('/estratto-conto/movimenti', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: buildAuthHeaders(undefined, { json: true }),
     body: JSON.stringify(payload),
   });
-  if (!res.ok) {
-    throw new Error(await readErrorDetail(res, `POST /estratto-conto/movimenti: ${res.status}`));
-  }
-  return res.json();
 }
 
 export async function updateStatementTransaction(
   movementId: string,
   payload: StatementTransactionPayload,
 ): Promise<StatementTransaction> {
-  const res = await fetch(`${API_BASE}/estratto-conto/movimenti/${movementId}`, {
+  return apiJson<StatementTransaction>(`/estratto-conto/movimenti/${movementId}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: buildAuthHeaders(undefined, { json: true }),
     body: JSON.stringify(payload),
   });
-  if (!res.ok) {
-    throw new Error(await readErrorDetail(res, `PUT /estratto-conto/movimenti/${movementId}: ${res.status}`));
-  }
-  return res.json();
 }
 
 export async function deleteStatementTransaction(movementId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/estratto-conto/movimenti/${movementId}`, {
+  const response = await apiFetch(`/estratto-conto/movimenti/${movementId}`, {
     method: 'DELETE',
   });
-  if (!res.ok) {
-    throw new Error(await readErrorDetail(res, `DELETE /estratto-conto/movimenti/${movementId}: ${res.status}`));
+  if (!response.ok) {
+    throw new Error(await readErrorDetail(response, `DELETE /estratto-conto/movimenti/${movementId}: ${response.status}`));
   }
 }
 
-// ---------------------------------------------------------------------------
-// Insights AI
-// ---------------------------------------------------------------------------
+export async function deleteAllTransactions(): Promise<StatementBulkDeleteResponse> {
+  return apiJson<StatementBulkDeleteResponse>('/estratto-conto/movimenti', {
+    method: 'DELETE',
+  });
+}
 
 export async function generateInsights(): Promise<InsightsResponse> {
-  const res = await fetch(`${API_BASE}/insights/generate`, {
+  return apiJson<InsightsResponse>('/insights/generate', {
     method: 'POST',
   });
-  if (!res.ok) {
-    throw new Error(await readErrorDetail(res, `POST /insights/generate: ${res.status}`));
-  }
-  return res.json();
 }
-
-// ---------------------------------------------------------------------------
-// Conversione File → ApiAttachment
-// ---------------------------------------------------------------------------
 
 function readFileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
       const result = reader.result as string;
-      // rimuove il prefisso "data:<mime>;base64,"
-      const base64 = result.split(',')[1];
-      resolve(base64);
+      resolve(result.split(',')[1]);
     };
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
@@ -274,7 +357,7 @@ function readFileAsBase64(file: File): Promise<string> {
 }
 
 export async function filesToAttachments(files: File[]): Promise<ApiAttachment[]> {
-  const supported = files.filter((f) => SUPPORTED_MIME_TYPES.has(f.type));
+  const supported = files.filter((file) => SUPPORTED_MIME_TYPES.has(file.type));
   return Promise.all(
     supported.map(async (file) => ({
       filename: file.name,
@@ -284,10 +367,6 @@ export async function filesToAttachments(files: File[]): Promise<ApiAttachment[]
   );
 }
 
-// ---------------------------------------------------------------------------
-// Chat streaming
-// ---------------------------------------------------------------------------
-
 export async function streamChat(
   message: string,
   conversation: Record<string, unknown>[],
@@ -295,14 +374,14 @@ export async function streamChat(
   frontendContext: FrontendContext | null,
   onReasoning: (chunk: string) => void,
   onAnswer: (chunk: string) => void,
-  onDone: (finalAnswer: string, updatedConversation: Record<string, unknown>[]) => void,
+  onDone: (finalAnswer: string, updatedConversation: Record<string, unknown>[], reload: boolean) => void,
   onError: (error: string) => void,
 ): Promise<void> {
   let response: Response;
   try {
     response = await fetch(`${API_BASE}/chat/stream`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildAuthHeaders(undefined, { json: true }),
       body: JSON.stringify({
         message,
         conversation,
@@ -310,41 +389,56 @@ export async function streamChat(
         frontend_context: frontendContext ?? undefined,
       }),
     });
-  } catch (err) {
-    onError(String(err));
+  } catch (error) {
+    onError(String(error));
     return;
   }
 
   if (!response.ok) {
-    onError(`HTTP ${response.status}`);
+    onError(await readErrorDetail(response, `POST /chat/stream: ${response.status}`));
     return;
   }
 
-  const reader = response.body!.getReader();
+  const reader = response.body?.getReader();
+  if (!reader) {
+    onError('Streaming non disponibile.');
+    return;
+  }
+
   const decoder = new TextDecoder();
   let buffer = '';
 
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        break;
+      }
 
       buffer += decoder.decode(value, { stream: true });
       const blocks = buffer.split('\n\n');
       buffer = blocks.pop() ?? '';
 
       for (const block of blocks) {
-        if (!block.trim()) continue;
+        if (!block.trim()) {
+          continue;
+        }
 
         let eventType = 'message';
         let dataStr = '';
 
         for (const line of block.split('\n')) {
-          if (line.startsWith('event: ')) eventType = line.slice(7).trim();
-          if (line.startsWith('data: ')) dataStr = line.slice(6).trim();
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7).trim();
+          }
+          if (line.startsWith('data: ')) {
+            dataStr = line.slice(6).trim();
+          }
         }
 
-        if (!dataStr) continue;
+        if (!dataStr) {
+          continue;
+        }
 
         let payload: Record<string, unknown>;
         try {
@@ -361,6 +455,7 @@ export async function streamChat(
           onDone(
             (payload.answer as string) ?? '',
             (payload.conversation as Record<string, unknown>[]) ?? [],
+            Boolean(payload.reload),
           );
         } else if (eventType === 'error') {
           onError((payload.content as string) ?? 'Errore sconosciuto');

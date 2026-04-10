@@ -1,0 +1,6 @@
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap');
+
+:root {
+  --font-body: 'Instrument Sans', 'Helvetica Neue', sans-serif;
+  --font-display: 'Space Grotesk', 'Avenir Next', sans-serif;
+}

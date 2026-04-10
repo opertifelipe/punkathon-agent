@@ -1,22 +1,31 @@
-import { useState, useEffect } from 'react';
-import { Menu, PlusCircle, ChevronLeft } from 'lucide-react';
-import { Sidebar } from './components/Sidebar';
+import { useEffect, useRef, useState } from 'react';
+import { ChevronLeft, LogOut, Menu, PlusCircle } from 'lucide-react';
+
+import { AuthDialog, type AuthMode } from './components/AuthDialog';
 import { ChatArea, Message } from './components/ChatArea';
 import { InputArea } from './components/InputArea';
-import { WeeklyOverview } from './components/WeeklyOverview';
-import { StoricoPanel } from './components/StoricoPanel';
 import { InsightsSidebar } from './components/InsightsSidebar';
+import { MarketingPage } from './components/MarketingPage';
+import { Sidebar } from './components/Sidebar';
+import { StoricoPanel } from './components/StoricoPanel';
+import { WeeklyOverview } from './components/WeeklyOverview';
 import {
+  AuthSession,
   FrontendContext,
-  fetchUtente,
-  updateUtente,
-  fetchSpeseSettimanali,
-  generateInsights,
-  streamChat,
-  filesToAttachments,
+  GeneratedInsight,
   UtenteProfile,
   WeekData,
-  GeneratedInsight,
+  clearStoredAuthSession,
+  deleteAllTransactions,
+  fetchCurrentUser,
+  fetchSpeseSettimanali,
+  fetchUtente,
+  filesToAttachments,
+  generateInsights,
+  getStoredAuthSession,
+  storeAuthSession,
+  streamChat,
+  updateUtente,
 } from './api/client';
 
 export interface Insight {
@@ -36,10 +45,28 @@ const THEME_STORAGE_KEY = 'punkagent-theme-mode';
 
 type ThemeMode = 'light' | 'dark';
 
-function App() {
-  // ---------------------------------------------------------------------------
-  // Stato UI
-  // ---------------------------------------------------------------------------
+function isAuthError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return (
+    message.includes('autenticazione richiesta')
+    || message.includes('sessione scaduta')
+    || message.includes('token non valido')
+    || message.includes('utente non trovato')
+    || message.includes('401')
+  );
+}
+
+function AuthenticatedApp({
+  onSignOut,
+  session,
+}: {
+  onSignOut: () => void;
+  session: AuthSession;
+}) {
   const [showStorico, setShowStorico] = useState(false);
   const [showSidebar, setShowSidebar] = useState(false);
   const [showInsights, setShowInsights] = useState(false);
@@ -56,66 +83,142 @@ function App() {
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   });
 
-  // ---------------------------------------------------------------------------
-  // Stato dati backend
-  // ---------------------------------------------------------------------------
   const [utenteProfile, setUtenteProfile] = useState<UtenteProfile | null>(null);
   const [weeklyData, setWeeklyData] = useState<WeekData[]>([]);
   const [weeklyStartDate, setWeeklyStartDate] = useState<Date>(() => {
-    const d = new Date();
-    return new Date(d.getFullYear(), d.getMonth(), 1);
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
   });
 
-  // ---------------------------------------------------------------------------
-  // Stato chat
-  // ---------------------------------------------------------------------------
+  const messagesStorageKey = `punkagent-messages:${session.user.id}`;
+  const conversationStorageKey = `punkagent-conversation:${session.user.id}`;
   const [messages, setMessages] = useState<Message[]>(() => {
-    const saved = localStorage.getItem('messages');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map((msg: Message) => ({ ...msg, timestamp: new Date(msg.timestamp) }));
-        }
-      } catch {
-        // ignora
-      }
+    if (typeof window === 'undefined') {
+      return [];
     }
+
+    const saved = window.localStorage.getItem(messagesStorageKey);
+    if (!saved) {
+      return [];
+    }
+
+    try {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.map((msg: Message) => ({ ...msg, timestamp: new Date(msg.timestamp) }));
+      }
+    } catch {
+      // ignora stato locale corrotto
+    }
+
     return [];
   });
-  const [conversation, setConversation] = useState<Record<string, unknown>[]>([]);
-  const [isStreaming, setIsStreaming] = useState(false);
+  const latestMessagesRef = useRef<Message[]>(messages);
+  const [conversation, setConversation] = useState<Record<string, unknown>[]>(() => {
+    if (typeof window === 'undefined') {
+      return [];
+    }
 
-  // ---------------------------------------------------------------------------
-  // Insights AI
-  // ---------------------------------------------------------------------------
+    const saved = window.localStorage.getItem(conversationStorageKey);
+    if (!saved) {
+      return [];
+    }
+
+    try {
+      const parsed = JSON.parse(saved);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [isDeletingAllTransactions, setIsDeletingAllTransactions] = useState(false);
+
   const [insights, setInsights] = useState<Insight[]>([]);
   const [isGeneratingInsights, setIsGeneratingInsights] = useState(false);
   const [insightsError, setInsightsError] = useState<string | null>(null);
 
-  // ---------------------------------------------------------------------------
-  // Caricamento iniziale
-  // ---------------------------------------------------------------------------
+  const handleSessionError = (error: unknown) => {
+    if (isAuthError(error)) {
+      onSignOut();
+      return true;
+    }
+    return false;
+  };
+
+  const reloadPage = (updatedMessages?: Message[], updatedConversation?: Record<string, unknown>[]) => {
+    if (updatedMessages) {
+      latestMessagesRef.current = updatedMessages;
+      window.localStorage.setItem(messagesStorageKey, JSON.stringify(updatedMessages));
+    }
+
+    if (updatedConversation) {
+      window.localStorage.setItem(conversationStorageKey, JSON.stringify(updatedConversation));
+    }
+
+    window.location.reload();
+  };
+
   useEffect(() => {
+    let ignore = false;
+
     fetchUtente()
-      .then(setUtenteProfile)
-      .catch(() => null);
+      .then((profile) => {
+        if (!ignore) {
+          setUtenteProfile(profile);
+        }
+      })
+      .catch((error) => {
+        if (!ignore) {
+          handleSessionError(error);
+        }
+      });
+
     fetchSpeseSettimanali(weeklyStartDate)
-      .then((r) => setWeeklyData(r.weeks))
-      .catch(() => null);
+      .then((response) => {
+        if (!ignore) {
+          setWeeklyData(response.weeks);
+        }
+      })
+      .catch((error) => {
+        if (!ignore) {
+          handleSessionError(error);
+        }
+      });
+
+    return () => {
+      ignore = true;
+    };
   }, []);
 
-  // Aggiorna spese settimanali quando cambia la settimana
   useEffect(() => {
+    let ignore = false;
+
     fetchSpeseSettimanali(weeklyStartDate)
-      .then((r) => setWeeklyData(r.weeks))
-      .catch(() => null);
+      .then((response) => {
+        if (!ignore) {
+          setWeeklyData(response.weeks);
+        }
+      })
+      .catch((error) => {
+        if (!ignore) {
+          handleSessionError(error);
+        }
+      });
+
+    return () => {
+      ignore = true;
+    };
   }, [weeklyStartDate]);
 
-  // Persiste i messaggi nel localStorage
   useEffect(() => {
-    localStorage.setItem('messages', JSON.stringify(messages));
-  }, [messages]);
+    latestMessagesRef.current = messages;
+    window.localStorage.setItem(messagesStorageKey, JSON.stringify(messages));
+  }, [messages, messagesStorageKey]);
+
+  useEffect(() => {
+    window.localStorage.setItem(conversationStorageKey, JSON.stringify(conversation));
+  }, [conversation, conversationStorageKey]);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', themeMode === 'dark');
@@ -123,9 +226,6 @@ function App() {
     window.localStorage.setItem(THEME_STORAGE_KEY, themeMode);
   }, [themeMode]);
 
-  // ---------------------------------------------------------------------------
-  // Valori derivati dal profilo utente
-  // ---------------------------------------------------------------------------
   const stipendio = utenteProfile?.stipendio_mensile ?? null;
   const speseFissi = utenteProfile?.spese_fisse_essenziali_mensili ?? 0;
   const disponibile = stipendio === null
@@ -135,7 +235,7 @@ function App() {
   const settimanaleBudget = settimanale ?? 0;
   const risparmio = utenteProfile?.risparmio_mensile ?? 0;
   const userGoal = (utenteProfile?.obiettivo ?? '').trim() || DEFAULT_USER_GOAL;
-  const weeklyExpenses = weeklyData.map((w) => w.total);
+  const weeklyExpenses = weeklyData.map((week) => week.total);
   const frontendContext: FrontendContext | null = weeklyData.length
     ? {
         weekly_overview: {
@@ -174,15 +274,13 @@ function App() {
       }
     : null;
 
-  // ---------------------------------------------------------------------------
-  // Handler
-  // ---------------------------------------------------------------------------
   const handleSetStipendio = async (value: number) => {
     try {
       const updated = await updateUtente({ stipendio_mensile: value });
       setUtenteProfile(updated);
-    } catch {
-      // ignora errori di rete
+      reloadPage();
+    } catch (error) {
+      handleSessionError(error);
     }
   };
 
@@ -190,8 +288,25 @@ function App() {
     try {
       const updated = await updateUtente({ obiettivo: value });
       setUtenteProfile(updated);
-    } catch {
-      // ignora errori di rete
+      reloadPage();
+    } catch (error) {
+      handleSessionError(error);
+    }
+  };
+
+  const handleDeleteAllTransactions = async () => {
+    setIsDeletingAllTransactions(true);
+
+    try {
+      await deleteAllTransactions();
+      reloadPage();
+    } catch (error) {
+      if (handleSessionError(error)) {
+        return;
+      }
+      throw error instanceof Error ? error : new Error('Cancellazione transazioni non riuscita.');
+    } finally {
+      setIsDeletingAllTransactions(false);
     }
   };
 
@@ -203,7 +318,7 @@ function App() {
       role: 'user',
       content,
       timestamp: new Date(),
-      attachments: files.map((f) => f.name),
+      attachments: files.map((file) => file.name),
     };
     setMessages((prev) => [...prev, userMsg]);
     setIsStreaming(true);
@@ -219,33 +334,41 @@ function App() {
       conversation,
       attachments,
       frontendContext,
-      // onReasoning: accumula testo nel riquadro thinking
       (chunk) =>
         setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantId ? { ...m, reasoning: (m.reasoning ?? '') + chunk } : m,
+          prev.map((message) =>
+            message.id === assistantId ? { ...message, reasoning: (message.reasoning ?? '') + chunk } : message,
           ),
         ),
-      // onAnswer: primo chunk → togli thinking, aggiungi contenuto
       (chunk) =>
         setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantId ? { ...m, isThinking: false, content: m.content + chunk } : m,
+          prev.map((message) =>
+            message.id === assistantId ? { ...message, isThinking: false, content: message.content + chunk } : message,
           ),
         ),
-      (finalAnswer, updatedConversation) => {
-        setConversation(updatedConversation);
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantId ? { ...m, isThinking: false, content: finalAnswer } : m,
-          ),
+      (finalAnswer, updatedConversation, reload) => {
+        const nextMessages = latestMessagesRef.current.map((message) =>
+          message.id === assistantId ? { ...message, isThinking: false, content: finalAnswer } : message,
         );
+
+        latestMessagesRef.current = nextMessages;
+        setConversation(updatedConversation);
+        setMessages(nextMessages);
         setIsStreaming(false);
+
+        if (reload) {
+          reloadPage(nextMessages, updatedConversation);
+        }
       },
       (error) => {
+        if (isAuthError(new Error(error))) {
+          onSignOut();
+          return;
+        }
+
         setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantId ? { ...m, isThinking: false, content: `Errore: ${error}` } : m,
+          prev.map((message) =>
+            message.id === assistantId ? { ...message, isThinking: false, content: `Errore: ${error}` } : message,
           ),
         );
         setIsStreaming(false);
@@ -260,7 +383,9 @@ function App() {
   const handleNewConversation = () => {
     setMessages([]);
     setConversation([]);
-    localStorage.removeItem('messages');
+    latestMessagesRef.current = [];
+    window.localStorage.removeItem(messagesStorageKey);
+    window.localStorage.removeItem(conversationStorageKey);
   };
 
   const handleGenerateInsights = async () => {
@@ -278,6 +403,10 @@ function App() {
         })),
       );
     } catch (error) {
+      if (handleSessionError(error)) {
+        return;
+      }
+
       setInsightsError(
         error instanceof Error
           ? `Generazione insight non riuscita: ${error.message}`
@@ -294,7 +423,6 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 transition-colors dark:bg-slate-950 dark:text-slate-100">
-      {/* Sidebar */}
       <Sidebar
         stipendio={stipendio}
         setStipendio={handleSetStipendio}
@@ -308,54 +436,73 @@ function App() {
         onClose={() => setShowSidebar(false)}
         onOpenEstrattoConto={() => setShowStorico(true)}
         onGenerateInsights={handleGenerateInsights}
+        onDeleteAllTransactions={handleDeleteAllTransactions}
         isGeneratingInsights={isGeneratingInsights}
+        isDeletingAllTransactions={isDeletingAllTransactions}
         themeMode={themeMode}
         onThemeChange={setThemeMode}
       />
 
-      {/* Main content */}
       <div className="flex-1">
-        {/* Top buttons */}
-        <div className="fixed top-4 left-0 right-0 flex items-center justify-between px-4 z-30">
-          {/* Hamburger menu - left */}
+        <div className="fixed left-0 right-0 top-4 z-30 flex items-center justify-between px-4 relative">
           <button
             onClick={() => setShowSidebar(true)}
             className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:text-slate-500 dark:hover:bg-slate-900 dark:hover:text-slate-200"
           >
-            <Menu className="w-6 h-6" />
+            <Menu className="h-6 w-6" />
           </button>
 
-          {/* Right buttons */}
-          <div className="flex items-center gap-3">
+          <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2 pointer-events-none">
+            <img src="/logo.png" alt="PunkAgent" className="h-7 w-7 object-contain" />
+            <span
+              className="text-sm font-semibold uppercase tracking-[0.22em] text-orange-500"
+              style={{ fontFamily: '"Space Grotesk", "Avenir Next", sans-serif' }}
+            >
+              PunkAgent
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2 rounded-full border border-white/70 bg-white/80 px-3 py-2 shadow-lg backdrop-blur dark:border-slate-800 dark:bg-slate-950/80">
+            <div className="hidden text-right sm:block">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-orange-500">Sessione</p>
+              <p className="text-sm text-slate-700 dark:text-slate-200">
+                {session.user.nome} {session.user.cognome}
+              </p>
+            </div>
+
             <button
               onClick={handleNewConversation}
-              className="flex items-center gap-2 rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:text-slate-500 dark:hover:bg-slate-900 dark:hover:text-slate-200"
+              className="flex items-center gap-2 rounded-full px-3 py-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-slate-200"
             >
-              <PlusCircle className="w-5 h-5" />
-              <span className="text-sm font-medium">Nuova conversazione</span>
+              <PlusCircle className="h-5 w-5" />
+              <span className="hidden text-sm font-medium md:inline">Nuova conversazione</span>
             </button>
             <button
               onClick={() => setShowInsights(true)}
-              className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:text-slate-500 dark:hover:bg-slate-900 dark:hover:text-slate-200"
+              className="rounded-full p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-slate-200"
               aria-label="Mostra insights"
             >
-              <ChevronLeft className="w-6 h-6" />
+              <ChevronLeft className="h-6 w-6" />
+            </button>
+            <button
+              onClick={onSignOut}
+              className="rounded-full p-2 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:text-slate-400 dark:hover:bg-red-950/30 dark:hover:text-red-300"
+              aria-label="Esci"
+            >
+              <LogOut className="h-5 w-5" />
             </button>
           </div>
         </div>
 
-        <div className="flex flex-col h-screen max-w-6xl mx-auto px-4 w-full">
-          {/* Chat Area */}
+        <div className="mx-auto flex h-screen max-w-6xl w-full flex-col px-4">
           <ChatArea messages={messages} onSuggestionClick={handleSuggestionClick} />
 
-          {/* Input */}
           <div className="mb-4">
-            <div className="w-full max-w-5xl mx-auto">
+            <div className="mx-auto w-full max-w-5xl">
               <InputArea onSendMessage={handleSendMessage} disabled={isStreaming} />
             </div>
           </div>
 
-          {/* Cerchi settimanali */}
           <div className="mb-6 pb-6">
             <WeeklyOverview
               weeklyExpenses={weeklyExpenses}
@@ -367,13 +514,11 @@ function App() {
         </div>
       </div>
 
-      {/* Estratto Conto Modal */}
       <StoricoPanel
         isOpen={showStorico}
         onClose={() => setShowStorico(false)}
       />
 
-      {/* Insights Sidebar */}
       <InsightsSidebar
         isOpen={showInsights}
         onClose={() => setShowInsights(false)}
@@ -383,6 +528,102 @@ function App() {
         onRemoveInsight={handleRemoveInsight}
       />
     </div>
+  );
+}
+
+function App() {
+  const [authSession, setAuthSession] = useState<AuthSession | null>(() => getStoredAuthSession());
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authDialogOpen, setAuthDialogOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<AuthMode>('signup');
+
+  useEffect(() => {
+    const stored = getStoredAuthSession();
+    if (!stored) {
+      setAuthChecked(true);
+      return;
+    }
+
+    let ignore = false;
+
+    fetchCurrentUser()
+      .then((user) => {
+        if (ignore) {
+          return;
+        }
+        const refreshedSession = { ...stored, user };
+        storeAuthSession(refreshedSession);
+        setAuthSession(refreshedSession);
+      })
+      .catch(() => {
+        if (ignore) {
+          return;
+        }
+        clearStoredAuthSession();
+        setAuthSession(null);
+      })
+      .finally(() => {
+        if (!ignore) {
+          setAuthChecked(true);
+        }
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, []);
+
+  const handleAuthenticated = (session: AuthSession) => {
+    storeAuthSession(session);
+    setAuthSession(session);
+    setAuthDialogOpen(false);
+  };
+
+  const handleOpenAuth = (mode: AuthMode) => {
+    setAuthMode(mode);
+    setAuthDialogOpen(true);
+  };
+
+  const handleSignOut = () => {
+    clearStoredAuthSession();
+    setAuthSession(null);
+  };
+
+  if (!authChecked) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(135deg,#f6efe8_0%,#f9fbff_42%,#eef7f1_100%)] px-6">
+        <div className="rounded-[2rem] border border-white/80 bg-white/80 px-8 py-7 text-center shadow-[0_28px_90px_rgba(15,23,42,0.1)]">
+          <p className="text-xs font-semibold uppercase tracking-[0.28em] text-orange-600">PunkAgent</p>
+          <p className="mt-3 text-lg text-slate-700">Sto ripristinando la tua sessione...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!authSession) {
+    return (
+      <>
+        <MarketingPage
+          onOpenSignin={() => handleOpenAuth('signin')}
+          onOpenSignup={() => handleOpenAuth('signup')}
+        />
+        <AuthDialog
+          mode={authMode}
+          onAuthenticated={handleAuthenticated}
+          onModeChange={setAuthMode}
+          onOpenChange={setAuthDialogOpen}
+          open={authDialogOpen}
+        />
+      </>
+    );
+  }
+
+  return (
+    <AuthenticatedApp
+      key={authSession.user.id}
+      onSignOut={handleSignOut}
+      session={authSession}
+    />
   );
 }
 

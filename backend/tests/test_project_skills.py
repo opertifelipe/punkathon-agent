@@ -21,6 +21,19 @@ class ProjectSkillsTests(unittest.TestCase):
         self.assertIn("analizza_spese_complessive", content)
         self.assertIn("calcola_spese_fisse_mensili", content)
 
+    def test_monthly_spending_skill_mentions_semantic_current_month_tool(self) -> None:
+        skill_path = (
+            Path(__file__).resolve().parents[1]
+            / "src/punkathon_agent/skills/project/monthly-spending-analysis/SKILL.md"
+        )
+
+        self.assertTrue(skill_path.exists(), f"Skill file mancante: {skill_path}")
+
+        content = skill_path.read_text(encoding="utf-8")
+
+        self.assertIn("ottieni_movimenti_mese_corrente", content)
+        self.assertIn("Do not use SQL LIKE/contains on `descrizione`", content)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -280,7 +280,7 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
         await createStatementTransaction(payload);
       }
       setIsDialogOpen(false);
-      await refreshCurrentView();
+      window.location.reload();
     } catch (saveError) {
       setFormError(saveError instanceof Error ? saveError.message : 'Salvataggio non riuscito.');
     } finally {
@@ -298,7 +298,7 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
 
     try {
       await deleteStatementTransaction(transaction.id);
-      await refreshCurrentView();
+      window.location.reload();
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : 'Cancellazione non riuscita.');
     } finally {

@@ -23,7 +23,15 @@ from .prompts import (
     PERIOD_ANALYST_SUBAGENT_PROMPT,
     SYSTEM_PROMPT,
 )
-from .request_context import reset_frontend_context, set_frontend_context
+from .request_context import (
+    get_db_reload_required,
+    reset_current_user_id,
+    reset_db_reload_required,
+    reset_frontend_context,
+    set_current_user_id,
+    set_db_reload_required,
+    set_frontend_context,
+)
 from .services import _inject_profile_context
 from .tools import ANALYSIS_TOOLS, ROOT_TOOLS
 
@@ -42,8 +50,8 @@ def build_chat_model() -> ChatOpenAI:
         api_key=api_key,
         use_responses_api=True,
         output_version="responses/v1",
-        reasoning={"summary": "auto", "effort": "low"},
-        verbosity="medium",
+        reasoning={"summary": "auto", "effort": "medium"},
+        verbosity="low",
     )
 
 
@@ -296,9 +304,12 @@ async def run_agent_turn_streaming(
     attachment_paths: list[str | os.PathLike[str]] | None = None,
     inline_attachments: list[dict[str, str]] | None = None,
     frontend_context: dict[str, Any] | None = None,
+    user_id: int | None = None,
     on_event: Callable[[dict[str, str]], Any] | None = None,
-) -> tuple[str, list[BaseMessage | dict[str, Any]]]:
+) -> tuple[str, list[BaseMessage | dict[str, Any]], bool]:
     token = set_frontend_context(frontend_context)
+    user_token = set_current_user_id(user_id)
+    reload_token = set_db_reload_required(False)
     try:
         agent_input = _build_agent_turn_input(
             conversation,
@@ -336,8 +347,10 @@ async def run_agent_turn_streaming(
                 "Autenticazione OpenAI fallita: verifica che OPENAI_API_KEY sia presente e valida nell'ambiente corrente."
             ) from exc
 
-        return extract_final_answer(latest_messages), latest_messages
+        return extract_final_answer(latest_messages), latest_messages, get_db_reload_required()
     finally:
+        reset_db_reload_required(reload_token)
+        reset_current_user_id(user_token)
         reset_frontend_context(token)
 
 
@@ -348,8 +361,11 @@ def run_agent_turn(
     attachment_paths: list[str | os.PathLike[str]] | None = None,
     inline_attachments: list[dict[str, str]] | None = None,
     frontend_context: dict[str, Any] | None = None,
-) -> tuple[str, list[BaseMessage | dict[str, Any]]]:
+    user_id: int | None = None,
+) -> tuple[str, list[BaseMessage | dict[str, Any]], bool]:
     token = set_frontend_context(frontend_context)
+    user_token = set_current_user_id(user_id)
+    reload_token = set_db_reload_required(False)
     try:
         try:
             result = agent.invoke(
@@ -367,6 +383,8 @@ def run_agent_turn(
             ) from exc
 
         messages = result.get("messages", [])
-        return extract_final_answer(messages), messages
+        return extract_final_answer(messages), messages, get_db_reload_required()
     finally:
+        reset_db_reload_required(reload_token)
+        reset_current_user_id(user_token)
         reset_frontend_context(token)

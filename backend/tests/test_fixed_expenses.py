@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import date
 
-from punkathon_agent.models.db import USER_PROFILE_ID, MovimentoBancario, Utente
+from punkathon_agent.models.db import MovimentoBancario, Utente
 from punkathon_agent.models.finance import CategoriaSpesa, MacroCategoriaSpesa
 from punkathon_agent.services.spending import (
     build_fixed_expense_context,
@@ -18,14 +18,14 @@ class FixedExpenseReasoningTests(unittest.TestCase):
             MovimentoBancario(
                 data=date(2026, 1, 5),
                 descrizione="Affitto casa",
-                importo=-1000.0,
+                importo=-900.0,
                 categoria=CategoriaSpesa.AFFITTO_O_MUTUO.value,
                 macrocategoria=MacroCategoriaSpesa.SPESE_FISSE.value,
             ),
             MovimentoBancario(
                 data=date(2026, 1, 15),
                 descrizione="Figma",
-                importo=-24.4,
+                importo=-20.0,
                 categoria=CategoriaSpesa.ABBONAMENTI.value,
                 macrocategoria=MacroCategoriaSpesa.SPESE_FISSE.value,
             ),
@@ -58,6 +58,7 @@ class FixedExpenseReasoningTests(unittest.TestCase):
             preview_limit=10,
         )
 
+        self.assertEqual(summary["mese_riferimento"], "2026-02")
         self.assertAlmostEqual(summary["spese_fisse_mensili_stimate"], 1024.4)
         categories = {row["categoria"] for row in summary["dettaglio_voci"]}
         self.assertIn(CategoriaSpesa.ABBONAMENTI.value, categories)
@@ -65,7 +66,7 @@ class FixedExpenseReasoningTests(unittest.TestCase):
 
     def test_fixed_expense_context_separates_macrocategory_from_profile(self) -> None:
         profile = Utente(
-            id=USER_PROFILE_ID,
+            user_id=1,
             spese_fisse_essenziali_mensili=265.33,
         )
 
@@ -82,7 +83,7 @@ class FixedExpenseReasoningTests(unittest.TestCase):
 
     def test_fixed_expense_scope_payload_can_expose_compact_macro_summary(self) -> None:
         profile = Utente(
-            id=USER_PROFILE_ID,
+            user_id=1,
             spese_fisse_essenziali_mensili=265.33,
         )
         fixed_summary = {

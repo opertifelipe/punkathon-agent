@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import json
 import os
 from contextlib import suppress
@@ -10,14 +8,17 @@ from datetime import date, timedelta
 from typing import Any
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jwt import ExpiredSignatureError, InvalidTokenError
 from openai import AuthenticationError
-from pydantic import BaseModel
-from sqlalchemy import delete, func, update
+from pydantic import BaseModel, Field, field_validator
 from sqlmodel import Session, select
+from sqlalchemy import func
 
+from punkathon_agent.auth import create_access_token, decode_access_token, hash_password, normalize_email, verify_password
 from punkathon_agent.db import get_session
 from punkathon_agent.models.api import (
     ChatRequest,
@@ -25,13 +26,14 @@ from punkathon_agent.models.api import (
     FrontendWeekBox,
     InsightsResponse,
     StatementClassificationSchema,
+    StatementBulkDeleteResponse,
     StatementDeleteResponse,
     StatementFilters,
     StatementPageResponse,
     StatementTransaction,
     StatementTransactionWrite,
 )
-from punkathon_agent.models.db import DEFAULT_USER_GOAL, USER_PROFILE_ID, MovimentoBancario, Utente
+from punkathon_agent.models.db import DEFAULT_USER_GOAL, MovimentoBancario, PunkUser, Utente
 from punkathon_agent.models.finance import serialize_classification_schema
 from punkathon_agent.punkagent import (
     get_punk_agent,
@@ -39,11 +41,64 @@ from punkathon_agent.punkagent import (
     run_agent_turn_streaming,
     serialize_conversation,
 )
+from punkathon_agent.services.spending import _ensure_estimated_fixed_expenses, _sync_budget_fields
 from punkathon_agent.services.ai_insights import generate_goal_based_sidebar_insights
 
-# ---------------------------------------------------------------------------
-# Modelli REST aggiuntivi
-# ---------------------------------------------------------------------------
+
+class AuthUserResponse(BaseModel):
+    id: int
+    email: str
+    nome: str
+    cognome: str
+    eta: int
+
+
+class AuthSessionResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: AuthUserResponse
+
+
+class SignupRequest(BaseModel):
+    email: str = Field(min_length=5)
+    nome: str = Field(min_length=1)
+    cognome: str = Field(min_length=1)
+    eta: int = Field(ge=13, le=120)
+    password: str = Field(min_length=8)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def validate_email(cls, value: Any) -> str:
+        email = normalize_email(str(value or ""))
+        if "@" not in email or "." not in email.split("@")[-1]:
+            raise ValueError("Inserisci un'email valida.")
+        return email
+
+    @field_validator("nome", "cognome", mode="before")
+    @classmethod
+    def normalize_name_fields(cls, value: Any) -> str:
+        normalized = " ".join(str(value or "").split()).strip()
+        if not normalized:
+            raise ValueError("Campo obbligatorio.")
+        return normalized
+
+    @field_validator("password", mode="before")
+    @classmethod
+    def normalize_password(cls, value: Any) -> str:
+        password = str(value or "")
+        if len(password) < 8:
+            raise ValueError("La password deve contenere almeno 8 caratteri.")
+        return password
+
+
+class SigninRequest(BaseModel):
+    email: str = Field(min_length=5)
+    password: str = Field(min_length=1)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email_field(cls, value: Any) -> str:
+        return normalize_email(str(value or ""))
 
 
 class UtenteResponse(BaseModel):
@@ -84,10 +139,7 @@ ITALIAN_MONTHS = [
     "Dicembre",
 ]
 
-
-# ---------------------------------------------------------------------------
-# App FastAPI
-# ---------------------------------------------------------------------------
+bearer_scheme = HTTPBearer(auto_error=False)
 
 app = FastAPI(
     title="PunkAgent API",
@@ -96,9 +148,14 @@ app = FastAPI(
 )
 
 
-# ---------------------------------------------------------------------------
-# Dipendenza DB
-# ---------------------------------------------------------------------------
+AUTO_ATTACHMENT_IMPORT_PROMPT = (
+    "Import automatico obbligatorio degli allegati di questa richiesta. "
+    "Leggi tutti gli allegati, estrai tutti i movimenti bancari riconoscibili e salvali subito con `aggiungi_movimenti`. "
+    "Subito dopo esegui `stima_spese_fisse_essenziali(sovrascrivi_valore_esistente=True)` per sincronizzare le spese fisse "
+    "dal mese completo precedente e poi `calcola_spese_fisse_mensili`. "
+    "Non chiedere conferma, non rimandare, non delegare gli allegati ai subagent. "
+    "Se un allegato non contiene movimenti utili, dillo chiaramente. Rispondi con un riepilogo sintetico dell'esito."
+)
 
 
 def get_db() -> Any:
@@ -107,6 +164,7 @@ def get_db() -> Any:
         yield session
     finally:
         session.close()
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -121,19 +179,166 @@ def _inline_attachments_payload(attachments: list[Any]) -> list[dict[str, str]]:
     return [attachment.model_dump() for attachment in attachments]
 
 
+def _build_visible_chat_message(message: str, *, attachments_were_processed: bool) -> str:
+    if not attachments_were_processed:
+        return message
+
+    stripped_message = message.strip()
+    user_request = stripped_message or (
+        "Conferma brevemente l'esito dell'import automatico appena eseguito, "
+        "indica che le spese fisse sono state ricalcolate se possibile e suggerisci cosa posso chiederti ora."
+    )
+
+    return (
+        "Nota operativa: il tentativo di import automatico degli allegati di questa richiesta e' gia' stato eseguito "
+        "prima di questo turno. Usa il database aggiornato risultante da quell'import e non chiedere di reinviare i file. "
+        "Le spese fisse sono gia' state ricalcolate se i dati lo permettono.\n\n"
+        f"Richiesta utente:\n{user_request}"
+    )
+
+
+def _run_automatic_attachment_import(
+    *,
+    attachments: list[dict[str, str]],
+    user_id: int,
+) -> tuple[str, bool]:
+    if not attachments:
+        return "", False
+
+    answer, _conversation, reload = run_agent_turn(
+        get_punk_agent(),
+        [],
+        AUTO_ATTACHMENT_IMPORT_PROMPT,
+        inline_attachments=attachments,
+        user_id=user_id,
+    )
+    return answer, reload
+
+
 def _sse_event(event_name: str, payload: dict[str, Any]) -> str:
     return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _serialize_user(user: PunkUser) -> AuthUserResponse:
+    if user.id is None:
+        raise HTTPException(status_code=500, detail="Utente senza identificatore persistito.")
+    return AuthUserResponse(
+        id=user.id,
+        email=user.email,
+        nome=user.nome,
+        cognome=user.cognome,
+        eta=user.eta,
+    )
 
 
 def _month_label(year: int, month: int) -> str:
     return f"{ITALIAN_MONTHS[month - 1]} {year}"
 
 
-def _expense_total_between(session: Session, *, start_date: date, end_date: date) -> float:
-    statement = select(func.sum(MovimentoBancario.importo)).where(
-        MovimentoBancario.data >= start_date,
-        MovimentoBancario.data <= end_date,
-        MovimentoBancario.importo < 0,
+def _movement_statement_for_user(user_id: int) -> Any:
+    return select(MovimentoBancario).where(MovimentoBancario.user_id == user_id)
+
+
+def _movement_by_identity(
+    session: Session,
+    *,
+    user_id: int,
+    data: date,
+    descrizione: str,
+    importo: float,
+    exclude_movement_id: int | None = None,
+) -> MovimentoBancario | None:
+    statement = (
+        _movement_statement_for_user(user_id)
+        .where(MovimentoBancario.data == data)
+        .where(MovimentoBancario.descrizione == descrizione)
+        .where(MovimentoBancario.importo == importo)
+    )
+    if exclude_movement_id is not None:
+        statement = statement.where(MovimentoBancario.id != exclude_movement_id)
+    return session.exec(statement).first()
+
+
+def _profile_for_user(session: Session, user_id: int) -> Utente | None:
+    return session.exec(select(Utente).where(Utente.user_id == user_id)).first()
+
+
+def _ensure_user_profile(session: Session, user_id: int) -> Utente:
+    utente = _profile_for_user(session, user_id)
+    changed = False
+
+    if utente is None:
+        utente = Utente(user_id=user_id)
+        changed = True
+
+    if not (utente.obiettivo or "").strip():
+        utente.obiettivo = DEFAULT_USER_GOAL
+        changed = True
+
+    if changed:
+        session.add(utente)
+        session.commit()
+        session.refresh(utente)
+
+    return utente
+
+
+def _sync_profile_fixed_expenses(session: Session, utente: Utente, *, user_id: int) -> Utente:
+    previous_budget = (utente.disponibile_mensile, utente.disponibile_settimanale)
+    _, _, changed = _ensure_estimated_fixed_expenses(
+        session,
+        utente,
+        overwrite_existing=True,
+        user_id=user_id,
+    )
+
+    _sync_budget_fields(utente)
+    budget_changed = previous_budget != (utente.disponibile_mensile, utente.disponibile_settimanale)
+
+    if budget_changed:
+        session.add(utente)
+        session.commit()
+        session.refresh(utente)
+    elif changed:
+        session.refresh(utente)
+
+    return utente
+
+
+def _claim_legacy_data_for_first_user(session: Session, user_id: int) -> None:
+    total_users = session.exec(select(func.count()).select_from(PunkUser)).one()
+    if int(total_users or 0) != 1:
+        _ensure_user_profile(session, user_id)
+        return
+
+    legacy_profile = session.exec(
+        select(Utente).where(Utente.user_id.is_(None)).order_by(Utente.id.asc())
+    ).first()
+    if legacy_profile is not None:
+        legacy_profile.user_id = user_id
+        if not (legacy_profile.obiettivo or "").strip():
+            legacy_profile.obiettivo = DEFAULT_USER_GOAL
+        session.add(legacy_profile)
+    else:
+        session.add(Utente(user_id=user_id, obiettivo=DEFAULT_USER_GOAL))
+
+    orphan_movements = session.exec(
+        select(MovimentoBancario).where(MovimentoBancario.user_id.is_(None))
+    ).all()
+    for movement in orphan_movements:
+        movement.user_id = user_id
+        session.add(movement)
+
+    session.commit()
+
+
+def _expense_total_between(session: Session, *, user_id: int, start_date: date, end_date: date) -> float:
+    statement = (
+        select(func.sum(MovimentoBancario.importo))
+        .where(MovimentoBancario.user_id == user_id)
+        .where(MovimentoBancario.data >= start_date)
+        .where(MovimentoBancario.data <= end_date)
+        .where(MovimentoBancario.importo < 0)
     )
     total_raw = session.exec(statement).one()
     return round(abs(float(total_raw or 0.0)), 2)
@@ -142,6 +347,7 @@ def _expense_total_between(session: Session, *, start_date: date, end_date: date
 def _build_week_boxes_from_start(
     session: Session,
     *,
+    user_id: int,
     start_date: date,
     reference_day: date,
 ) -> list[FrontendWeekBox]:
@@ -155,7 +361,7 @@ def _build_week_boxes_from_start(
                 label=f"Settimana {index}",
                 start=week_start.isoformat(),
                 end=week_end.isoformat(),
-                total=_expense_total_between(session, start_date=week_start, end_date=week_end),
+                total=_expense_total_between(session, user_id=user_id, start_date=week_start, end_date=week_end),
                 contains_today=week_start <= reference_day <= week_end,
             )
         )
@@ -165,11 +371,14 @@ def _build_week_boxes_from_start(
 def _available_statement_years(
     session: Session,
     *,
+    user_id: int,
     selected_year: int,
     reference_day: date,
 ) -> list[int]:
     years = {selected_year, reference_day.year}
-    for movement_date in session.exec(select(MovimentoBancario.data)).all():
+    for movement_date in session.exec(
+        select(MovimentoBancario.data).where(MovimentoBancario.user_id == user_id)
+    ).all():
         years.add(movement_date.year)
 
     first_year = min(years) - 1
@@ -188,35 +397,29 @@ def _default_statement_week(weeks: list[FrontendWeekBox]) -> int:
     return 1
 
 
-def _serialize_movement_id(data: date, descrizione: str, importo: float) -> str:
-    payload = json.dumps(
-        [data.isoformat(), descrizione, repr(float(importo))],
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+def _serialize_movement_id(movement: MovimentoBancario) -> str:
+    if movement.id is None:
+        raise HTTPException(status_code=500, detail="Movimento senza identificatore persistito.")
+    return str(movement.id)
 
 
-def _deserialize_movement_id(movement_id: str) -> tuple[date, str, float]:
+def _deserialize_movement_id(movement_id: str) -> int:
     try:
-        padding = "=" * (-len(movement_id) % 4)
-        decoded = base64.urlsafe_b64decode(f"{movement_id}{padding}".encode("ascii")).decode("utf-8")
-        data_raw, descrizione_raw, importo_raw = json.loads(decoded)
-        return (date.fromisoformat(str(data_raw)), str(descrizione_raw), float(importo_raw))
-    except (ValueError, TypeError, json.JSONDecodeError, binascii.Error, UnicodeDecodeError) as exc:
+        return int(movement_id)
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail="Identificatore movimento non valido.") from exc
 
 
-def _get_movement_or_404(session: Session, movement_id: str) -> MovimentoBancario:
+def _get_movement_or_404(session: Session, movement_id: str, *, user_id: int) -> MovimentoBancario:
     movement = session.get(MovimentoBancario, _deserialize_movement_id(movement_id))
-    if movement is None:
+    if movement is None or movement.user_id != user_id:
         raise HTTPException(status_code=404, detail="Movimento non trovato.")
     return movement
 
 
 def _serialize_statement_transaction(movement: MovimentoBancario) -> StatementTransaction:
     return StatementTransaction(
-        id=_serialize_movement_id(movement.data, movement.descrizione, movement.importo),
+        id=_serialize_movement_id(movement),
         data=movement.data,
         descrizione=movement.descrizione,
         note=movement.note,
@@ -229,11 +432,12 @@ def _serialize_statement_transaction(movement: MovimentoBancario) -> StatementTr
 def _statement_transactions_between(
     session: Session,
     *,
+    user_id: int,
     start_date: date,
     end_date: date,
 ) -> list[StatementTransaction]:
     statement = (
-        select(MovimentoBancario)
+        _movement_statement_for_user(user_id)
         .where(MovimentoBancario.data >= start_date)
         .where(MovimentoBancario.data <= end_date)
         .order_by(MovimentoBancario.data.desc(), MovimentoBancario.descrizione.asc(), MovimentoBancario.importo.asc())
@@ -241,24 +445,24 @@ def _statement_transactions_between(
     return [_serialize_statement_transaction(item) for item in session.exec(statement).all()]
 
 
-def _ensure_user_profile(session: Session) -> Utente:
-    utente = session.get(Utente, USER_PROFILE_ID)
-    changed = False
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    session: Session = Depends(get_db),
+) -> PunkUser:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Autenticazione richiesta.")
 
-    if utente is None:
-        utente = Utente(id=USER_PROFILE_ID)
-        changed = True
+    try:
+        user_id = decode_access_token(credentials.credentials)
+    except ExpiredSignatureError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sessione scaduta.") from exc
+    except (InvalidTokenError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token non valido.") from exc
 
-    if not (utente.obiettivo or "").strip():
-        utente.obiettivo = DEFAULT_USER_GOAL
-        changed = True
-
-    if changed:
-        session.add(utente)
-        session.commit()
-        session.refresh(utente)
-
-    return utente
+    user = session.get(PunkUser, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Utente non trovato.")
+    return user
 
 
 @app.get("/health")
@@ -266,10 +470,63 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.post("/auth/signup", response_model=AuthSessionResponse, status_code=201)
+def signup(payload: SignupRequest, session: Session = Depends(get_db)) -> AuthSessionResponse:
+    existing = session.exec(select(PunkUser).where(PunkUser.email == payload.email)).first()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Esiste gia' un account con questa email.")
+
+    user = PunkUser(
+        email=payload.email,
+        nome=payload.nome,
+        cognome=payload.cognome,
+        eta=payload.eta,
+        password_hash=hash_password(payload.password),
+    )
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+
+    if user.id is None:
+        raise HTTPException(status_code=500, detail="Impossibile creare il nuovo utente.")
+
+    _claim_legacy_data_for_first_user(session, user.id)
+
+    return AuthSessionResponse(
+        access_token=create_access_token(user.id),
+        user=_serialize_user(user),
+    )
+
+
+@app.post("/auth/signin", response_model=AuthSessionResponse)
+def signin(payload: SigninRequest, session: Session = Depends(get_db)) -> AuthSessionResponse:
+    user = session.exec(select(PunkUser).where(PunkUser.email == payload.email)).first()
+    if user is None or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenziali non valide.")
+
+    if user.id is None:
+        raise HTTPException(status_code=500, detail="Utente senza identificatore persistito.")
+
+    _ensure_user_profile(session, user.id)
+
+    return AuthSessionResponse(
+        access_token=create_access_token(user.id),
+        user=_serialize_user(user),
+    )
+
+
+@app.get("/auth/me", response_model=AuthUserResponse)
+def auth_me(current_user: PunkUser = Depends(get_current_user)) -> AuthUserResponse:
+    return _serialize_user(current_user)
+
+
 @app.post("/insights/generate", response_model=InsightsResponse)
-def generate_insights() -> InsightsResponse:
+def generate_insights(current_user: PunkUser = Depends(get_current_user)) -> InsightsResponse:
+    if current_user.id is None:
+        raise HTTPException(status_code=500, detail="Utente senza identificatore persistito.")
+
     try:
-        payload = generate_goal_based_sidebar_insights()
+        payload = generate_goal_based_sidebar_insights(user_id=current_user.id)
     except AuthenticationError as exc:
         raise HTTPException(
             status_code=503,
@@ -285,22 +542,43 @@ def generate_insights() -> InsightsResponse:
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest) -> ChatResponse:
-    answer, conversation = run_agent_turn(
+def chat(request: ChatRequest, current_user: PunkUser = Depends(get_current_user)) -> ChatResponse:
+    if current_user.id is None:
+        raise HTTPException(status_code=500, detail="Utente senza identificatore persistito.")
+
+    attachments_payload = _inline_attachments_payload(request.attachments)
+    attachments_were_processed = bool(attachments_payload)
+    _, preload_reload = _run_automatic_attachment_import(
+        attachments=attachments_payload,
+        user_id=current_user.id,
+    )
+
+    answer, conversation, turn_reload = run_agent_turn(
         get_punk_agent(),
         request.conversation,
-        request.message,
-        inline_attachments=_inline_attachments_payload(request.attachments),
+        _build_visible_chat_message(
+            request.message,
+            attachments_were_processed=attachments_were_processed,
+        ),
+        inline_attachments=[] if attachments_were_processed else attachments_payload,
         frontend_context=request.frontend_context.model_dump(exclude_none=True) if request.frontend_context else None,
+        user_id=current_user.id,
     )
     return ChatResponse(
         answer=answer,
         conversation=serialize_conversation(conversation),
+        reload=preload_reload or turn_reload,
     )
 
 
 @app.post("/chat/stream")
-async def chat_stream(request: ChatRequest) -> StreamingResponse:
+async def chat_stream(
+    request: ChatRequest,
+    current_user: PunkUser = Depends(get_current_user),
+) -> StreamingResponse:
+    if current_user.id is None:
+        raise HTTPException(status_code=500, detail="Utente senza identificatore persistito.")
+
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     async def on_event(event: dict[str, str]) -> None:
@@ -308,12 +586,35 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
 
     async def runner() -> None:
         try:
-            answer, conversation = await run_agent_turn_streaming(
+            attachments_payload = _inline_attachments_payload(request.attachments)
+            attachments_were_processed = bool(attachments_payload)
+            preload_reload = False
+
+            if attachments_were_processed:
+                await queue.put(
+                    {
+                        "type": "reasoning",
+                        "content": (
+                            "Import automatico allegati in corso. Sto salvando i movimenti nel database "
+                            "e ricalcolando subito le spese fisse."
+                        ),
+                    }
+                )
+                _import_answer, preload_reload = _run_automatic_attachment_import(
+                    attachments=attachments_payload,
+                    user_id=current_user.id,
+                )
+
+            answer, conversation, turn_reload = await run_agent_turn_streaming(
                 get_punk_agent(),
                 request.conversation,
-                request.message,
-                inline_attachments=_inline_attachments_payload(request.attachments),
+                _build_visible_chat_message(
+                    request.message,
+                    attachments_were_processed=attachments_were_processed,
+                ),
+                inline_attachments=[] if attachments_were_processed else attachments_payload,
                 frontend_context=request.frontend_context.model_dump(exclude_none=True) if request.frontend_context else None,
+                user_id=current_user.id,
                 on_event=on_event,
             )
             await queue.put(
@@ -321,6 +622,7 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
                     "type": "done",
                     "answer": answer,
                     "conversation": serialize_conversation(conversation),
+                    "reload": preload_reload or turn_reload,
                 }
             )
         except Exception as exc:
@@ -356,14 +658,26 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
 
 
 @app.get("/utente", response_model=UtenteResponse)
-def get_utente(session: Session = Depends(get_db)) -> UtenteResponse:
-    utente = _ensure_user_profile(session)
+def get_utente(
+    session: Session = Depends(get_db),
+    current_user: PunkUser = Depends(get_current_user),
+) -> UtenteResponse:
+    if current_user.id is None:
+        raise HTTPException(status_code=500, detail="Utente senza identificatore persistito.")
+
+    utente = _sync_profile_fixed_expenses(
+        session,
+        _ensure_user_profile(session, current_user.id),
+        user_id=current_user.id,
+    )
 
     today = date.today()
     first_day = today.replace(day=1)
-    stmt = select(func.sum(MovimentoBancario.importo)).where(
-        MovimentoBancario.data >= first_day,
-        MovimentoBancario.data <= today,
+    stmt = (
+        select(func.sum(MovimentoBancario.importo))
+        .where(MovimentoBancario.user_id == current_user.id)
+        .where(MovimentoBancario.data >= first_day)
+        .where(MovimentoBancario.data <= today)
     )
     risparmio_raw = session.exec(stmt).one()
     risparmio_mensile = round(risparmio_raw or 0.0, 2)
@@ -378,34 +692,40 @@ def get_utente(session: Session = Depends(get_db)) -> UtenteResponse:
 
 
 @app.patch("/utente", response_model=UtenteResponse)
-def patch_utente(payload: UtenteUpdate, session: Session = Depends(get_db)) -> UtenteResponse:
-    utente = _ensure_user_profile(session)
+def patch_utente(
+    payload: UtenteUpdate,
+    session: Session = Depends(get_db),
+    current_user: PunkUser = Depends(get_current_user),
+) -> UtenteResponse:
+    if current_user.id is None:
+        raise HTTPException(status_code=500, detail="Utente senza identificatore persistito.")
+
+    utente = _ensure_user_profile(session, current_user.id)
 
     if payload.stipendio_mensile is not None:
         utente.stipendio_mensile = payload.stipendio_mensile
     if payload.obiettivo is not None:
         utente.obiettivo = payload.obiettivo.strip() or DEFAULT_USER_GOAL
 
-    if utente.stipendio_mensile is not None and utente.spese_fisse_essenziali_mensili is not None:
-        utente.disponibile_mensile = utente.stipendio_mensile - utente.spese_fisse_essenziali_mensili
-        utente.disponibile_settimanale = utente.disponibile_mensile / 4
+    utente = _sync_profile_fixed_expenses(session, utente, user_id=current_user.id)
 
-    session.add(utente)
-    session.commit()
-    session.refresh(utente)
-
-    return get_utente(session)
+    return get_utente(session, current_user)
 
 
 @app.get("/spese-settimanali", response_model=SpeseSettimanaliResponse)
 def get_spese_settimanali(
     start_date: date | None = Query(default=None),
     session: Session = Depends(get_db),
+    current_user: PunkUser = Depends(get_current_user),
 ) -> SpeseSettimanaliResponse:
+    if current_user.id is None:
+        raise HTTPException(status_code=500, detail="Utente senza identificatore persistito.")
+
     reference_day = date.today()
     normalized_start = start_date or (reference_day - timedelta(days=28))
     weeks = _build_week_boxes_from_start(
         session,
+        user_id=current_user.id,
         start_date=normalized_start,
         reference_day=reference_day,
     )
@@ -421,16 +741,26 @@ def get_statement_page(
     month: int | None = Query(default=None, ge=1, le=12),
     week: int | None = Query(default=None, ge=1, le=5),
     session: Session = Depends(get_db),
+    current_user: PunkUser = Depends(get_current_user),
 ) -> StatementPageResponse:
+    if current_user.id is None:
+        raise HTTPException(status_code=500, detail="Utente senza identificatore persistito.")
+
     reference_day = date.today()
     selected_year = year or reference_day.year
     selected_month = month or reference_day.month
     month_start = _statement_month_start(selected_year, selected_month)
-    weeks = _build_week_boxes_from_start(session, start_date=month_start, reference_day=reference_day)
+    weeks = _build_week_boxes_from_start(
+        session,
+        user_id=current_user.id,
+        start_date=month_start,
+        reference_day=reference_day,
+    )
     selected_week = week or _default_statement_week(weeks)
     selected_window = weeks[selected_week - 1]
     transactions = _statement_transactions_between(
         session,
+        user_id=current_user.id,
         start_date=date.fromisoformat(selected_window.start),
         end_date=date.fromisoformat(selected_window.end),
     )
@@ -445,6 +775,7 @@ def get_statement_page(
             period_end=selected_window.end,
             available_years=_available_statement_years(
                 session,
+                user_id=current_user.id,
                 selected_year=selected_year,
                 reference_day=reference_day,
             ),
@@ -460,15 +791,26 @@ def get_statement_page(
 def create_statement_transaction(
     payload: StatementTransactionWrite,
     session: Session = Depends(get_db),
+    current_user: PunkUser = Depends(get_current_user),
 ) -> StatementTransaction:
-    primary_key = (payload.data, payload.descrizione, float(payload.importo))
-    if session.get(MovimentoBancario, primary_key) is not None:
+    if current_user.id is None:
+        raise HTTPException(status_code=500, detail="Utente senza identificatore persistito.")
+
+    existing = _movement_by_identity(
+        session,
+        user_id=current_user.id,
+        data=payload.data,
+        descrizione=payload.descrizione,
+        importo=float(payload.importo),
+    )
+    if existing is not None:
         raise HTTPException(
             status_code=409,
             detail="Esiste gia' un movimento con data, descrizione e importo identici.",
         )
 
     movement = MovimentoBancario(
+        user_id=current_user.id,
         data=payload.data,
         descrizione=payload.descrizione,
         importo=float(payload.importo),
@@ -487,54 +829,72 @@ def update_statement_transaction(
     movement_id: str,
     payload: StatementTransactionWrite,
     session: Session = Depends(get_db),
+    current_user: PunkUser = Depends(get_current_user),
 ) -> StatementTransaction:
-    current = _get_movement_or_404(session, movement_id)
-    current_key = (current.data, current.descrizione, float(current.importo))
-    next_key = (payload.data, payload.descrizione, float(payload.importo))
+    if current_user.id is None:
+        raise HTTPException(status_code=500, detail="Utente senza identificatore persistito.")
 
-    if next_key != current_key and session.get(MovimentoBancario, next_key) is not None:
+    current = _get_movement_or_404(session, movement_id, user_id=current_user.id)
+    duplicate = _movement_by_identity(
+        session,
+        user_id=current_user.id,
+        data=payload.data,
+        descrizione=payload.descrizione,
+        importo=float(payload.importo),
+        exclude_movement_id=current.id,
+    )
+    if duplicate is not None:
         raise HTTPException(
             status_code=409,
             detail="Esiste gia' un movimento con data, descrizione e importo identici.",
         )
 
-    session.exec(
-        update(MovimentoBancario)
-        .where(MovimentoBancario.data == current_key[0])
-        .where(MovimentoBancario.descrizione == current_key[1])
-        .where(MovimentoBancario.importo == current_key[2])
-        .values(
-            data=payload.data,
-            descrizione=payload.descrizione,
-            importo=float(payload.importo),
-            note=payload.note,
-            categoria=payload.categoria.value,
-            macrocategoria=payload.macrocategoria.value,
-        )
-    )
+    current.data = payload.data
+    current.descrizione = payload.descrizione
+    current.importo = float(payload.importo)
+    current.note = payload.note
+    current.categoria = payload.categoria.value
+    current.macrocategoria = payload.macrocategoria.value
+    session.add(current)
     session.commit()
+    session.refresh(current)
 
-    updated = session.get(MovimentoBancario, next_key)
-    if updated is None:
-        raise HTTPException(status_code=500, detail="Impossibile ricaricare il movimento aggiornato.")
-    return _serialize_statement_transaction(updated)
+    return _serialize_statement_transaction(current)
 
 
 @app.delete("/estratto-conto/movimenti/{movement_id}", response_model=StatementDeleteResponse)
 def delete_statement_transaction(
     movement_id: str,
     session: Session = Depends(get_db),
+    current_user: PunkUser = Depends(get_current_user),
 ) -> StatementDeleteResponse:
-    movement = _get_movement_or_404(session, movement_id)
-    session.exec(
-        delete(MovimentoBancario)
-        .where(MovimentoBancario.data == movement.data)
-        .where(MovimentoBancario.descrizione == movement.descrizione)
-        .where(MovimentoBancario.importo == movement.importo)
-    )
+    if current_user.id is None:
+        raise HTTPException(status_code=500, detail="Utente senza identificatore persistito.")
+
+    movement = _get_movement_or_404(session, movement_id, user_id=current_user.id)
+    session.delete(movement)
     session.commit()
 
     return StatementDeleteResponse(movement_id=movement_id)
+
+
+@app.delete("/estratto-conto/movimenti", response_model=StatementBulkDeleteResponse)
+def delete_all_statement_transactions(
+    session: Session = Depends(get_db),
+    current_user: PunkUser = Depends(get_current_user),
+) -> StatementBulkDeleteResponse:
+    if current_user.id is None:
+        raise HTTPException(status_code=500, detail="Utente senza identificatore persistito.")
+
+    movements = session.exec(_movement_statement_for_user(current_user.id)).all()
+    deleted_count = len(movements)
+
+    for movement in movements:
+        session.delete(movement)
+
+    session.commit()
+
+    return StatementBulkDeleteResponse(deleted=True, deleted_count=deleted_count)
 
 
 def main() -> None:

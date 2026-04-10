@@ -5,6 +5,8 @@ from datetime import date
 from typing import Any
 
 _frontend_context_var: ContextVar[dict[str, Any] | None] = ContextVar("frontend_context", default=None)
+_current_user_id_var: ContextVar[int | None] = ContextVar("current_user_id", default=None)
+_db_reload_required_var: ContextVar[bool] = ContextVar("db_reload_required", default=False)
 
 
 def set_frontend_context(frontend_context: dict[str, Any] | None) -> Token[dict[str, Any] | None]:
@@ -17,6 +19,34 @@ def reset_frontend_context(token: Token[dict[str, Any] | None]) -> None:
 
 def get_frontend_context() -> dict[str, Any] | None:
     return _frontend_context_var.get()
+
+
+def set_current_user_id(user_id: int | None) -> Token[int | None]:
+    return _current_user_id_var.set(user_id)
+
+
+def reset_current_user_id(token: Token[int | None]) -> None:
+    _current_user_id_var.reset(token)
+
+
+def get_current_user_id() -> int | None:
+    return _current_user_id_var.get()
+
+
+def set_db_reload_required(value: bool = False) -> Token[bool]:
+    return _db_reload_required_var.set(value)
+
+
+def reset_db_reload_required(token: Token[bool]) -> None:
+    _db_reload_required_var.reset(token)
+
+
+def get_db_reload_required() -> bool:
+    return _db_reload_required_var.get()
+
+
+def mark_db_updated() -> None:
+    _db_reload_required_var.set(True)
 
 
 def get_default_frontend_week_window(*, today: date | None = None) -> dict[str, Any] | None:
@@ -61,8 +91,15 @@ def get_default_frontend_week_window(*, today: date | None = None) -> dict[str, 
 
 
 __all__ = [
+    "get_db_reload_required",
+    "get_current_user_id",
     "get_default_frontend_week_window",
     "get_frontend_context",
+    "mark_db_updated",
+    "reset_current_user_id",
+    "reset_db_reload_required",
     "reset_frontend_context",
+    "set_current_user_id",
+    "set_db_reload_required",
     "set_frontend_context",
 ]

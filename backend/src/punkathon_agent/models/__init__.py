@@ -19,7 +19,7 @@ from .agent import (
     RisparmioInternoUpdate,
 )
 from .api import ApiAttachment, ChatRequest, ChatResponse
-from .db import MovimentoBancario, USER_PROFILE_ID, Utente
+from .db import MovimentoBancario, PunkUser, Utente
 from .finance import (
     BatchClassificazioneMovimenti,
     CATEGORIA_TO_MACRO_CATEGORIA,
@@ -48,6 +48,7 @@ __all__ = [
     "MovimentoInput",
     "OrdinamentoQuerySQL",
     "PeriodoAnalisi",
+    "PunkUser",
     "ProfiloUtenteUpdate",
     "RichiestaAnalisiCategorieSpesa",
     "RichiestaAnalisiMese",
@@ -57,7 +58,6 @@ __all__ = [
     "RichiestaCostruzioneQuerySQL",
     "RichiestaInsightObiettivo",
     "RisparmioInternoUpdate",
-    "USER_PROFILE_ID",
     "Utente",
     "serialize_classification_schema",
 ]

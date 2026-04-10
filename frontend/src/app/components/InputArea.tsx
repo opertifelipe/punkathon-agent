@@ -93,7 +93,7 @@ export function InputArea({ onSendMessage, disabled = false }: InputAreaProps) {
         onChange={handleFileChange}
         className="hidden"
         multiple
-        accept="image/*,.pdf,.doc,.docx"
+        accept="image/*,.pdf"
       />
     </>
   );

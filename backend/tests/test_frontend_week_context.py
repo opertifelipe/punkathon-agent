@@ -6,11 +6,12 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from punkathon_agent.cli.api import app
+from punkathon_agent.cli.api import app, get_current_user
 from punkathon_agent.db import engine as app_engine
+from punkathon_agent.models.db import PunkUser
 from punkathon_agent.punkagent.attachments import build_user_message_content
 from punkathon_agent.punkagent.request_context import reset_frontend_context, set_frontend_context
-from punkathon_agent.services.spending import resolve_week_window
+from punkathon_agent.services.spending import _inject_profile_context, resolve_week_window
 
 
 FRONTEND_CONTEXT = {
@@ -42,10 +43,19 @@ FRONTEND_CONTEXT = {
 
 class FrontendWeekContextTests(unittest.TestCase):
     def setUp(self) -> None:
+        app.dependency_overrides[get_current_user] = lambda: PunkUser(
+            id=1,
+            email="frontend@example.com",
+            nome="Felipe",
+            cognome="Operti",
+            eta=33,
+            password_hash="not-used-in-tests",
+        )
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
         self.client.close()
+        app.dependency_overrides.clear()
         app_engine.dispose()
 
     def test_build_user_message_content_includes_frontend_weekly_overview(self) -> None:
@@ -69,9 +79,43 @@ class FrontendWeekContextTests(unittest.TestCase):
         self.assertEqual(window["start_date"].isoformat(), "2026-04-08")
         self.assertEqual(window["end_date"].isoformat(), "2026-04-14")
 
+    @patch("punkathon_agent.services.spending._current_user_profile_snapshot")
+    def test_injected_profile_context_mentions_how_to_add_first_movements(
+        self,
+        mocked_snapshot: unittest.mock.Mock,
+    ) -> None:
+        mocked_snapshot.return_value = {
+            "utente_autenticato": {
+                "id": 1,
+                "nome": "Felipe",
+                "cognome": "Operti",
+                "nome_completo": "Felipe Operti",
+                "eta": 33,
+            },
+            "conteggio_movimenti_database": 0,
+            "database_movimenti_vuoto": True,
+            "profilo": {},
+            "campi_mancanti": [],
+            "stato_spese_fisse_essenziali": "non_stimabili_dai_movimenti",
+        }
+
+        content = _inject_profile_context("Ciao")
+
+        self.assertIsInstance(content, str)
+        self.assertIn("database dei movimenti bancari e' ancora vuoto", content)
+        self.assertIn("PDF dell'estratto conto", content)
+        self.assertIn("foto di scontrini o ricevute", content)
+        self.assertIn("scrivendoli direttamente in chat", content)
+
+    @patch("punkathon_agent.cli.api.get_punk_agent")
     @patch("punkathon_agent.cli.api.run_agent_turn")
-    def test_chat_endpoint_forwards_frontend_context(self, mocked_run_agent_turn: unittest.mock.Mock) -> None:
-        mocked_run_agent_turn.return_value = ("ok", [])
+    def test_chat_endpoint_forwards_frontend_context(
+        self,
+        mocked_run_agent_turn: unittest.mock.Mock,
+        mocked_get_punk_agent: unittest.mock.Mock,
+    ) -> None:
+        mocked_get_punk_agent.return_value = object()
+        mocked_run_agent_turn.return_value = ("ok", [], False)
 
         response = self.client.post(
             "/chat",
@@ -85,10 +129,50 @@ class FrontendWeekContextTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         mocked_run_agent_turn.assert_called_once()
+        self.assertFalse(response.json()["reload"])
         self.assertEqual(
             mocked_run_agent_turn.call_args.kwargs["frontend_context"],
             FRONTEND_CONTEXT,
         )
+
+    @patch("punkathon_agent.cli.api.get_punk_agent")
+    @patch("punkathon_agent.cli.api.run_agent_turn")
+    def test_chat_endpoint_auto_imports_attachments_before_answer(
+        self,
+        mocked_run_agent_turn: unittest.mock.Mock,
+        mocked_get_punk_agent: unittest.mock.Mock,
+    ) -> None:
+        mocked_get_punk_agent.return_value = object()
+        mocked_run_agent_turn.side_effect = [
+            ("import ok", [], True),
+            ("risposta finale", [], False),
+        ]
+
+        response = self.client.post(
+            "/chat",
+            json={
+                "message": "",
+                "conversation": [],
+                "attachments": [
+                    {
+                        "filename": "statement.pdf",
+                        "mime_type": "application/pdf",
+                        "base64_data": "ZmFrZS1wZGY=",
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mocked_run_agent_turn.call_count, 2)
+        preload_call = mocked_run_agent_turn.call_args_list[0]
+        visible_call = mocked_run_agent_turn.call_args_list[1]
+
+        self.assertEqual(preload_call.args[1], [])
+        self.assertEqual(preload_call.kwargs["inline_attachments"][0]["filename"], "statement.pdf")
+        self.assertEqual(visible_call.kwargs["inline_attachments"], [])
+        self.assertIn("tentativo di import automatico", visible_call.args[2])
+        self.assertTrue(response.json()["reload"])
 
 
 if __name__ == "__main__":

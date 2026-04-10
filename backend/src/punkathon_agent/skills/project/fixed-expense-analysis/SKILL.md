@@ -15,11 +15,11 @@ description: Use this skill when the user asks for monthly fixed expenses, struc
 1. Map the request to `MacroCategoriaSpesa = Spese Fisse`.
 2. Use `analizza_spese_fisse` or `calcola_spese_fisse_mensili`.
 3. Read `spese_fisse_da_macrocategoria`.
-4. Separate the macrocategory-based fixed estimate from the essential-fixed profile estimate if both are present.
+4. Use the total from the previous complete month as the canonical monthly fixed-cost value.
 5. Point out which fixed items are structural and which are review candidates.
-6. Do not auto-explain any gap with the profile unless the user explicitly asks for that comparison.
+6. If you mention the profile field, explain that it is synchronized with the same previous-complete-month total used for budget.
 
 ## Guardrails
 - Do not confuse fixed costs with essential-only fixed costs.
-- If you mention the profile field, call it `spese fisse essenziali`, never just `spese fisse`.
-- If there are no complete months available, state that clearly.
+- If you mention the profile field, explain that it mirrors the previous complete month's `Spese Fisse` total.
+- If the previous complete month is not available, state that clearly.

@@ -30,6 +30,7 @@ from punkathon_agent.models.agent import (
 )
 from punkathon_agent.models.db import MovimentoBancario
 from punkathon_agent.models.finance import MacroCategoriaSpesa, serialize_classification_schema
+from punkathon_agent.punkagent.request_context import get_current_user_id, mark_db_updated
 from punkathon_agent.services.classification import classifica_movimenti
 from punkathon_agent.services.spending import (
     _build_period_summary,
@@ -39,6 +40,7 @@ from punkathon_agent.services.spending import (
     _fetch_all_movements,
     _fetch_movements_between,
     _get_or_create_user_profile,
+    _infer_essential_fixed_expense_items,
     _is_likely_essential_fixed,
     _merge_notes,
     _month_bucket,
@@ -63,6 +65,8 @@ from .constants import MAX_QUERY_ROWS
 
 TABLE_SCHEMAS: dict[str, dict[str, str]] = {
     "movimenti_bancari": {
+        "id": "number",
+        "user_id": "number",
         "data": "date",
         "descrizione": "string",
         "importo": "number",
@@ -71,6 +75,7 @@ TABLE_SCHEMAS: dict[str, dict[str, str]] = {
         "macrocategoria": "string",
     },
     "utente": {
+        "user_id": "number",
         "stipendio_mensile": "number",
         "spese_fisse_essenziali_mensili": "number",
         "disponibile_mensile": "number",
@@ -84,6 +89,31 @@ UTENTE_COLUMNS = list(TABLE_SCHEMAS["utente"])
 SQL_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 TEXT_FILTER_OPERATORS = {"contains", "starts_with", "ends_with"}
 NUMERIC_AGGREGATIONS = {"sum", "avg"}
+
+
+def _require_current_user_id() -> int:
+    current_user_id = get_current_user_id()
+    if current_user_id is None:
+        raise RuntimeError("Contesto utente mancante.")
+    return current_user_id
+
+
+def _find_exact_movement(
+    session: Any,
+    *,
+    user_id: int,
+    data: date,
+    descrizione: str,
+    importo: float,
+) -> MovimentoBancario | None:
+    statement = (
+        select(MovimentoBancario)
+        .where(MovimentoBancario.user_id == user_id)
+        .where(MovimentoBancario.data == data)
+        .where(MovimentoBancario.descrizione == descrizione)
+        .where(MovimentoBancario.importo == importo)
+    )
+    return session.exec(statement).first()
 
 
 def _is_variable_expense(movement: MovimentoBancario, inferred_descriptions: set[str]) -> bool:
@@ -104,12 +134,17 @@ def _variable_expense_total(movements: list[MovimentoBancario], inferred_descrip
 
 def _prepare_profile(session: Any) -> tuple[Any, str, list[dict[str, Any]], set[str]]:
     profile = _get_or_create_user_profile(session)
-    evidence, fixed_expenses_status, _ = _ensure_estimated_fixed_expenses(session, profile)
+    inferred_evidence = _infer_essential_fixed_expense_items(session)
+    evidence, fixed_expenses_status, _ = _ensure_estimated_fixed_expenses(
+        session,
+        profile,
+        overwrite_existing=True,
+    )
     _sync_budget_fields(profile)
     session.add(profile)
     session.commit()
     session.refresh(profile)
-    inferred_descriptions = {item["chiave"] for item in evidence}
+    inferred_descriptions = {item["chiave"] for item in inferred_evidence}
     return profile, fixed_expenses_status, evidence, inferred_descriptions
 
 
@@ -274,6 +309,7 @@ def _recurring_items(
 def aggiungi_movimenti(movimenti: list[MovimentoInput]) -> str:
     """Aggiunge uno o piu' movimenti alla tabella movimenti_bancari."""
     create_database()
+    current_user_id = _require_current_user_id()
     added_rows: list[dict[str, Any]] = []
     merged_exact_duplicates: list[dict[str, Any]] = []
     processed_rows: list[dict[str, Any]] = []
@@ -281,8 +317,13 @@ def aggiungi_movimenti(movimenti: list[MovimentoInput]) -> str:
     with get_session() as session:
         prepared_rows: list[dict[str, Any]] = []
         for movimento in movimenti:
-            primary_key = (movimento.data, movimento.descrizione, movimento.importo)
-            existing = session.get(MovimentoBancario, primary_key)
+            existing = _find_exact_movement(
+                session,
+                user_id=current_user_id,
+                data=movimento.data,
+                descrizione=movimento.descrizione,
+                importo=movimento.importo,
+            )
             note = _merge_notes(existing.note, movimento.note) if existing is not None else movimento.note
             prepared_rows.append(
                 {
@@ -331,6 +372,7 @@ def aggiungi_movimenti(movimenti: list[MovimentoInput]) -> str:
                 continue
 
             record_payload = movimento.model_dump()
+            record_payload["user_id"] = current_user_id
             record_payload["note"] = item["note"]
             record = MovimentoBancario(
                 **record_payload,
@@ -347,6 +389,8 @@ def aggiungi_movimenti(movimenti: list[MovimentoInput]) -> str:
         except IntegrityError as exc:
             session.rollback()
             raise ValueError("Non sono riuscito a salvare i movimenti richiesti nel database.") from exc
+
+        mark_db_updated()
 
         removed_cross_source_duplicates, remaining_cross_source_candidates = _deduplicate_movimenti(session)
 
@@ -412,6 +456,31 @@ def _quote_sql_literal(value: Any, *, column_type: str) -> str:
 def _escape_like_pattern(value: Any) -> str:
     escaped = str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_").replace("'", "''")
     return escaped
+
+
+def _semantic_description_query_guidance() -> str:
+    return json.dumps(
+        {
+            "error": "Filtro semantico su descrizione non consentito via SQL.",
+            "details": (
+                "Non usare LIKE/contains sulla colonna descrizione per richieste del tipo "
+                "'ho speso per pizza questo mese?'."
+            ),
+            "suggested_tool": "ottieni_movimenti_mese_corrente",
+            "alternative_tools": [
+                "ottieni_movimenti_mese_corrente",
+                "analizza_spese_mese",
+                "analizza_spese_per_categoria",
+            ],
+            "hint": (
+                "Se la richiesta riguarda questo mese, chiama `ottieni_movimenti_mese_corrente` "
+                "e fai matching semantico sulle descrizioni restituite; per categorie esplicite usa "
+                "`analizza_spese_per_categoria`."
+            ),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 def _build_where_clause(table_name: str, filtro: FiltroQuerySQL) -> str:
@@ -545,12 +614,17 @@ def costruisci_query_sql(payload: RichiestaCostruzioneQuerySQL) -> str:
 
     if payload.filtri:
         filter_parts: list[str] = []
-        for index, filtro in enumerate(payload.filtri):
-            clause = _build_where_clause(table_name, filtro)
-            if index == 0:
-                filter_parts.append(clause)
-                continue
-            filter_parts.append(f"{filtro.combina_con_precedente.upper()} {clause}")
+        try:
+            for index, filtro in enumerate(payload.filtri):
+                clause = _build_where_clause(table_name, filtro)
+                if index == 0:
+                    filter_parts.append(clause)
+                    continue
+                filter_parts.append(f"{filtro.combina_con_precedente.upper()} {clause}")
+        except ValueError as exc:
+            if "LIKE/contains" in str(exc) and "descrizione" in str(exc):
+                return _semantic_description_query_guidance()
+            raise
         sql_parts.append(f"WHERE {' '.join(filter_parts)}")
 
     if group_by_columns:
@@ -913,7 +987,7 @@ def analizza_spese_complessive(payload: RichiestaAnalisiStorica | None = None) -
 
 
 def calcola_spese_fisse_mensili(preview_limit: int = 10) -> str:
-    """Calcola le spese fisse mensili medie usando `macrocategoria = Spese Fisse` sui mesi completi disponibili."""
+    """Calcola le spese fisse mensili usando `macrocategoria = Spese Fisse` del mese completo precedente."""
     create_database()
     safe_preview_limit = max(1, min(int(preview_limit), 20))
 
@@ -1062,6 +1136,8 @@ def aggiorna_risparmio_interno(payload: RisparmioInternoUpdate) -> str:
         session.add(profile)
         session.commit()
 
+    mark_db_updated()
+
     return json.dumps(
         {
             "message": "Campo risparmio aggiornato per uso interno.",
@@ -1075,7 +1151,7 @@ def aggiorna_risparmio_interno(payload: RisparmioInternoUpdate) -> str:
 def cancella_movimenti(filtro: FiltroCancellazione) -> str:
     """Cancella i movimenti che corrispondono ai filtri indicati."""
     create_database()
-    statement = select(MovimentoBancario)
+    statement = select(MovimentoBancario).where(MovimentoBancario.user_id == _require_current_user_id())
 
     if filtro.data is not None:
         statement = statement.where(MovimentoBancario.data == filtro.data)
@@ -1106,6 +1182,8 @@ def cancella_movimenti(filtro: FiltroCancellazione) -> str:
             session.delete(item)
         session.commit()
 
+    mark_db_updated()
+
     return json.dumps(
         {
             "message": f"Cancellati {len(deleted)} movimenti.",
@@ -1117,7 +1195,7 @@ def cancella_movimenti(filtro: FiltroCancellazione) -> str:
 
 
 def ottieni_profilo_utente() -> str:
-    """Restituisce il profilo utente con stipendio, spese fisse essenziali e budget disponibile."""
+    """Restituisce il profilo utente con spese fisse mensili sincronizzate dal mese completo precedente."""
     create_database()
 
     with get_session() as session:
@@ -1130,9 +1208,15 @@ def ottieni_profilo_utente() -> str:
     if "stipendio_mensile" in missing_fields:
         message = "Profilo utente incompleto: manca ancora lo stipendio mensile."
     elif fixed_expenses_status == "non_stimabili_dai_movimenti":
-        message = "Profilo utente parziale: non riesco ancora a stimare le spese fisse essenziali dai movimenti disponibili."
+        message = (
+            "Profilo utente parziale: non riesco ancora a calcolare le spese fisse mensili "
+            "dal mese completo precedente."
+        )
     elif fixed_expenses_status in {"stimate_automaticamente", "ricalcolate_automaticamente"}:
-        message = "Profilo utente aggiornato con spese fisse essenziali calcolate automaticamente dai movimenti."
+        message = (
+            "Profilo utente aggiornato con spese fisse mensili sincronizzate dalla "
+            "macrocategoria `Spese Fisse` del mese completo precedente."
+        )
     else:
         message = "Profilo utente pronto all'uso."
 
@@ -1179,6 +1263,8 @@ def aggiorna_profilo_utente(payload: ProfiloUtenteUpdate) -> str:
         session.commit()
         session.refresh(profile)
 
+    mark_db_updated()
+
     return json.dumps(
         {
             "message": "Profilo utente aggiornato.",
@@ -1191,7 +1277,7 @@ def aggiorna_profilo_utente(payload: ProfiloUtenteUpdate) -> str:
 
 
 def stima_spese_fisse_essenziali(sovrascrivi_valore_esistente: bool = False) -> str:
-    """Stima le spese fisse essenziali dai movimenti ricorrenti e le salva nel profilo utente."""
+    """Sincronizza nel profilo il totale `Spese Fisse` del mese completo precedente."""
     create_database()
 
     with get_session() as session:
@@ -1200,7 +1286,7 @@ def stima_spese_fisse_essenziali(sovrascrivi_valore_esistente: bool = False) -> 
         if profile.spese_fisse_essenziali_mensili is not None and not sovrascrivi_valore_esistente:
             return json.dumps(
                 {
-                    "message": "Le spese fisse essenziali sono gia' presenti nel profilo utente.",
+                    "message": "Le spese fisse mensili sono gia' presenti nel profilo utente.",
                     "profilo": _serialize_profile(profile),
                     "evidenze": [],
                 },
@@ -1208,7 +1294,7 @@ def stima_spese_fisse_essenziali(sovrascrivi_valore_esistente: bool = False) -> 
                 indent=2,
             )
 
-        evidence, fixed_expenses_status, _ = _ensure_estimated_fixed_expenses(
+        evidence, fixed_expenses_status, changed = _ensure_estimated_fixed_expenses(
             session,
             profile,
             overwrite_existing=sovrascrivi_valore_esistente,
@@ -1217,7 +1303,10 @@ def stima_spese_fisse_essenziali(sovrascrivi_valore_esistente: bool = False) -> 
         if fixed_expenses_status == "non_stimabili_dai_movimenti":
             return json.dumps(
                 {
-                    "message": "Non riesco a calcolare le spese fisse essenziali dai movimenti disponibili in questo momento.",
+                    "message": (
+                        "Non riesco a calcolare le spese fisse mensili dal mese completo precedente "
+                        "con i movimenti disponibili in questo momento."
+                    ),
                     "profilo": _serialize_profile(profile),
                     "evidenze": [],
                 },
@@ -1225,9 +1314,15 @@ def stima_spese_fisse_essenziali(sovrascrivi_valore_esistente: bool = False) -> 
                 indent=2,
             )
 
+    if changed:
+        mark_db_updated()
+
     return json.dumps(
         {
-            "message": "Ho calcolato e salvato le spese fisse essenziali mensili dai movimenti disponibili.",
+            "message": (
+                "Ho calcolato e salvato le spese fisse mensili usando la macrocategoria "
+                "`Spese Fisse` del mese completo precedente."
+            ),
             "profilo": _serialize_profile(profile),
             "evidenze": evidence,
         },
@@ -1326,12 +1421,18 @@ def ottieni_movimenti_mese_corrente() -> str:
 def riepilogo_movimenti_database(limit: int = 5) -> str:
     """Restituisce conteggio totale movimenti e ultime righe del database."""
     create_database()
+    current_user_id = _require_current_user_id()
     safe_limit = max(1, min(int(limit), 20))
 
     with get_session() as session:
-        total_movements = session.exec(select(sql_func.count()).select_from(MovimentoBancario)).one()
+        total_movements = session.exec(
+            select(sql_func.count())
+            .select_from(MovimentoBancario)
+            .where(MovimentoBancario.user_id == current_user_id)
+        ).one()
         statement = (
             select(MovimentoBancario)
+            .where(MovimentoBancario.user_id == current_user_id)
             .order_by(MovimentoBancario.data.desc(), MovimentoBancario.descrizione.asc(), MovimentoBancario.importo.asc())
             .limit(safe_limit)
         )
@@ -1352,6 +1453,7 @@ def riepilogo_movimenti_database(limit: int = 5) -> str:
 def esegui_query_sql(sql: str) -> str:
     """Esegue una query SQL di sola lettura sulle tabelle movimenti_bancari e utente."""
     create_database()
+    current_user_id = _require_current_user_id()
     cleaned_sql = sql.strip().rstrip(";")
     lowered_sql = cleaned_sql.lower()
 
@@ -1367,10 +1469,10 @@ def esegui_query_sql(sql: str) -> str:
         raise ValueError("Il campo risparmio non e' leggibile dall'agente.")
     if "utente" in lowered_sql and (re.search(r"select\s+\*", lowered_sql) or "utente.*" in lowered_sql):
         raise ValueError("Per la tabella utente devi selezionare esplicitamente solo le colonne leggibili.")
+    if "main." in lowered_sql or "temp." in lowered_sql:
+        raise ValueError("Non usare prefissi di schema espliciti nelle query SQL.")
     if "descrizione" in lowered_sql and re.search(r"\b(?:like|ilike)\b", lowered_sql):
-        raise ValueError(
-            "Non usare LIKE o ILIKE sulla colonna descrizione. Per domande tipo 'ho speso per...' usa i tool di analisi dedicati."
-        )
+        return _semantic_description_query_guidance()
 
     forbidden_tokens = (
         " insert ",
@@ -1390,6 +1492,35 @@ def esegui_query_sql(sql: str) -> str:
 
     try:
         with engine.connect() as connection:
+            connection.execute(sql_text("DROP VIEW IF EXISTS temp.movimenti_bancari"))
+            connection.execute(sql_text("DROP VIEW IF EXISTS temp.utente"))
+            connection.execute(
+                sql_text(
+                    f"""
+                    CREATE TEMP VIEW movimenti_bancari AS
+                    SELECT id, user_id, data, descrizione, importo, note, categoria, macrocategoria
+                    FROM main.movimenti_bancari
+                    WHERE user_id = {int(current_user_id)}
+                    """
+                )
+            )
+            connection.execute(
+                sql_text(
+                    f"""
+                    CREATE TEMP VIEW utente AS
+                    SELECT
+                        user_id,
+                        stipendio_mensile,
+                        spese_fisse_essenziali_mensili,
+                        disponibile_mensile,
+                        disponibile_settimanale,
+                        obiettivo,
+                        spese_irrinunciabili
+                    FROM main.utente
+                    WHERE user_id = {int(current_user_id)}
+                    """
+                )
+            )
             result = connection.execute(sql_text(cleaned_sql))
             mappings = result.mappings().fetchmany(MAX_QUERY_ROWS + 1)
     except SQLAlchemyError as exc:
@@ -1429,10 +1560,11 @@ def mostra_schema_database() -> str:
                 "Per analisi di categoria usa `analizza_spese_per_categoria`.",
                 "Per analisi settimanali usa `analizza_spese_settimana`.",
                 "Per analisi mensili usa `analizza_spese_mese`.",
+                "Per domande semantiche tipo 'ho speso per pizza questo mese?' usa `ottieni_movimenti_mese_corrente`, non SQL LIKE su descrizione.",
                 "Per storico completo usa `analizza_spese_complessive`.",
                 "Per il calcolo delle spese fisse mensili da macrocategoria usa `calcola_spese_fisse_mensili`.",
                 "Per insight guidati dall'obiettivo usa `genera_insight_settimanali` o `genera_insight_mensili`.",
-                "La tabella movimenti_bancari non ha una colonna `id`.",
+                "I dati restituiti sono gia' limitati all'utente autenticato.",
                 "I campi categoria e macrocategoria vengono valorizzati automaticamente in `aggiungi_movimenti`.",
                 "Esiste un campo interno write-only di risparmio non esposto in lettura.",
             ],
@@ -1469,6 +1601,7 @@ ANALYSIS_TOOLS = [
     calcola_spese_fisse_mensili,
     genera_insight_settimanali,
     genera_insight_mensili,
+    ottieni_movimenti_mese_corrente,
 ]
 
 ROOT_TOOLS = [

@@ -11,9 +11,10 @@ from sqlmodel import select
 
 from punkathon_agent.db import create_database, get_session
 from punkathon_agent.models.agent import MessageContent
-from punkathon_agent.models.db import MovimentoBancario, USER_PROFILE_ID, Utente
+from punkathon_agent.models.db import MovimentoBancario, PunkUser, Utente
 from punkathon_agent.models.finance import CategoriaSpesa, MacroCategoriaSpesa
 from punkathon_agent.punkagent.request_context import get_default_frontend_week_window
+from punkathon_agent.punkagent.request_context import get_current_user_id
 from punkathon_agent.punkagent.constants import (
     DESCRIPTION_STOPWORDS,
     ESSENTIAL_FIXED_KEYWORDS,
@@ -37,6 +38,21 @@ NON_ESSENTIAL_FIXED_CATEGORIES = {
     CategoriaSpesa.ABBONAMENTI.value,
     CategoriaSpesa.PALESTRA.value,
 }
+
+
+def _resolve_user_id(user_id: int | None = None) -> int:
+    scoped_user_id = user_id if user_id is not None else get_current_user_id()
+    if scoped_user_id is None:
+        raise RuntimeError("Contesto utente mancante.")
+    return scoped_user_id
+
+
+def _scope_movement_statement(statement: Any, *, user_id: int | None = None) -> Any:
+    return statement.where(MovimentoBancario.user_id == _resolve_user_id(user_id))
+
+
+def _scope_profile_statement(statement: Any, *, user_id: int | None = None) -> Any:
+    return statement.where(Utente.user_id == _resolve_user_id(user_id))
 
 
 def _round_money(value: float | None) -> float | None:
@@ -142,6 +158,18 @@ def _has_recurring_fixed_hint(normalized_text: str) -> bool:
 
 def _month_bucket(value: date) -> str:
     return value.strftime("%Y-%m")
+
+
+def _previous_complete_month_window(*, reference_date: date | None = None) -> dict[str, date | str]:
+    today = reference_date or date.today()
+    current_month_start = today.replace(day=1)
+    previous_month_end = current_month_start - timedelta(days=1)
+    previous_month_start = previous_month_end.replace(day=1)
+    return {
+        "label": _month_bucket(previous_month_start),
+        "start_date": previous_month_start,
+        "end_date": previous_month_end,
+    }
 
 
 def _week_bucket(value: date) -> str:
@@ -251,10 +279,11 @@ def _compact_fixed_expense_summary(fixed_expense_summary: dict[str, Any] | None)
 
     complete_months = fixed_expense_summary.get("mesi_completi_disponibili") or []
     return {
+        "mese_riferimento": fixed_expense_summary.get("mese_riferimento"),
         "spese_fisse_mensili_stimate": fixed_expense_summary.get("spese_fisse_mensili_stimate"),
         "spese_fisse_mese_corrente": fixed_expense_summary.get("spese_fisse_mese_corrente"),
         "mesi_completi_disponibili_count": len(complete_months),
-        "metodo": "macrocategoria = Spese Fisse",
+        "metodo": "macrocategoria = Spese Fisse del mese completo precedente",
     }
 
 
@@ -270,6 +299,7 @@ def build_fixed_expense_context(
         "campo": "spese_fisse_essenziali_mensili",
         "valore_mensile": _round_money(profile.spese_fisse_essenziali_mensili),
         "stato": fixed_expenses_status,
+        "metodo_calcolo": "totale `macrocategoria = Spese Fisse` del mese completo precedente",
         "usa_per": ["budget", "obiettivo", "margine disponibile"],
     }
 
@@ -279,13 +309,13 @@ def build_fixed_expense_context(
     return {
         "richiesta_generica_utente": {
             "usa": "spese_fisse_da_macrocategoria",
-            "metodo": "macrocategoria = Spese Fisse",
+            "metodo": "macrocategoria = Spese Fisse del mese completo precedente",
         },
         "profilo_utente": profile_payload,
         "confronto_automatico_consigliato": False,
         "nota": (
-            "Quando l'utente chiede 'spese fisse' bisogna ragionare per macrocategoria; "
-            "il profilo conserva invece solo le spese fisse essenziali."
+            "Il profilo usa lo stesso totale delle spese fisse da macrocategoria, "
+            "sincronizzato sul mese completo precedente per budget e margine disponibile."
         ),
     }
 
@@ -357,7 +387,9 @@ def _serialize_duplicate_candidate_group(movimenti: list[MovimentoBancario]) -> 
 
 
 def _deduplicate_movimenti(session: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    statement = select(MovimentoBancario).order_by(MovimentoBancario.data.desc(), MovimentoBancario.descrizione.asc())
+    statement = _scope_movement_statement(
+        select(MovimentoBancario).order_by(MovimentoBancario.data.desc(), MovimentoBancario.descrizione.asc())
+    )
     movements = list(session.exec(statement))
     groups: dict[tuple[date, float], list[MovimentoBancario]] = {}
 
@@ -400,10 +432,11 @@ def _deduplicate_movimenti(session: Any) -> tuple[list[dict[str, Any]], list[dic
     return removed_duplicates, cross_source_candidates
 
 
-def _get_or_create_user_profile(session: Any) -> Utente:
-    profile = session.get(Utente, USER_PROFILE_ID)
+def _get_or_create_user_profile(session: Any, *, user_id: int | None = None) -> Utente:
+    scoped_user_id = _resolve_user_id(user_id)
+    profile = session.exec(_scope_profile_statement(select(Utente), user_id=scoped_user_id)).first()
     if profile is None:
-        profile = Utente(id=USER_PROFILE_ID)
+        profile = Utente(user_id=scoped_user_id)
         session.add(profile)
         session.commit()
         session.refresh(profile)
@@ -491,9 +524,12 @@ def _infer_essential_fixed_expense_items_from_movements(
     return inferred_items
 
 
-def _infer_essential_fixed_expense_items(session: Any) -> list[dict[str, Any]]:
-    statement = select(MovimentoBancario).order_by(MovimentoBancario.data.desc())
-    movements = list(session.exec(statement))
+def _infer_essential_fixed_expense_items(
+    session: Any,
+    *,
+    user_id: int | None = None,
+) -> list[dict[str, Any]]:
+    movements = _fetch_all_movements(session, user_id=user_id)
     return _infer_essential_fixed_expense_items_from_movements(movements)
 
 
@@ -508,17 +544,33 @@ def _ensure_estimated_fixed_expenses(
     profile: Utente,
     *,
     overwrite_existing: bool = False,
+    user_id: int | None = None,
+    reference_date: date | None = None,
 ) -> tuple[list[dict[str, Any]], str, bool]:
-    if profile.spese_fisse_essenziali_mensili is not None and not overwrite_existing:
-        return [], "presenti", False
-
-    evidence = _infer_essential_fixed_expense_items(session)
-    estimated_total = _estimate_essential_fixed_total(evidence)
+    all_movements = _fetch_all_movements(session, user_id=user_id)
+    fixed_summary = build_fixed_expense_monthly_summary(
+        all_movements,
+        reference_date=reference_date,
+        preview_limit=20,
+    )
+    evidence = list(fixed_summary.get("dettaglio_voci") or [])
+    estimated_total = fixed_summary.get("spese_fisse_mensili_stimate")
+    previous_value = _round_money(profile.spese_fisse_essenziali_mensili)
 
     if estimated_total is None:
-        return evidence, "non_stimabili_dai_movimenti", False
+        if previous_value is None or not overwrite_existing:
+            return evidence, "non_stimabili_dai_movimenti", False
 
-    previous_value = _round_money(profile.spese_fisse_essenziali_mensili)
+        profile.spese_fisse_essenziali_mensili = None
+        _sync_budget_fields(profile)
+        session.add(profile)
+        session.commit()
+        session.refresh(profile)
+        return evidence, "non_stimabili_dai_movimenti", True
+
+    if previous_value is not None and not overwrite_existing:
+        return evidence, "presenti", False
+
     if previous_value == estimated_total:
         return evidence, "presenti", False
 
@@ -534,16 +586,40 @@ def _ensure_estimated_fixed_expenses(
 
 def _current_user_profile_snapshot() -> dict[str, Any]:
     create_database()
+    current_user_id = get_current_user_id()
+
     with get_session() as session:
+        authenticated_user = None
+        if current_user_id is not None:
+            current_user = session.get(PunkUser, current_user_id)
+            if current_user is not None and current_user.id is not None:
+                authenticated_user = {
+                    "id": current_user.id,
+                    "email": current_user.email,
+                    "nome": current_user.nome,
+                    "cognome": current_user.cognome,
+                    "nome_completo": f"{current_user.nome} {current_user.cognome}".strip(),
+                    "eta": current_user.eta,
+                }
+
         profile = _get_or_create_user_profile(session)
-        fixed_expenses_evidence, fixed_expenses_status, _ = _ensure_estimated_fixed_expenses(session, profile)
+        fixed_expenses_evidence, fixed_expenses_status, _ = _ensure_estimated_fixed_expenses(
+            session,
+            profile,
+            overwrite_existing=True,
+            user_id=current_user_id,
+        )
         _sync_budget_fields(profile)
         session.add(profile)
         session.commit()
         session.refresh(profile)
         all_movements = _fetch_all_movements(session)
+        movement_count = len(all_movements)
         fixed_summary = build_fixed_expense_monthly_summary(all_movements, preview_limit=3)
         return {
+            "utente_autenticato": authenticated_user,
+            "conteggio_movimenti_database": movement_count,
+            "database_movimenti_vuoto": movement_count == 0,
             "profilo": _serialize_profile(profile),
             "campi_mancanti": _profile_missing_fields(profile),
             "stato_spese_fisse_essenziali": fixed_expenses_status,
@@ -561,7 +637,29 @@ def _current_user_profile_snapshot() -> dict[str, Any]:
 def _inject_profile_context(user_content: MessageContent) -> MessageContent:
     profile_snapshot = _current_user_profile_snapshot()
     profile_context = json.dumps(profile_snapshot, ensure_ascii=False, indent=2)
+    authenticated_user = profile_snapshot.get("utente_autenticato")
     profile_header = "Contesto profilo utente corrente dal database:\n"
+    empty_dataset_note = ""
+
+    if profile_snapshot.get("database_movimenti_vuoto") is True:
+        empty_dataset_note = (
+            "Il database dei movimenti bancari e' ancora vuoto. "
+            "Invita l'utente ad aggiungere i primi movimenti allegando il PDF dell'estratto conto, "
+            "foto di scontrini o ricevute, oppure scrivendoli direttamente in chat.\n"
+        )
+
+    if isinstance(authenticated_user, dict) and authenticated_user.get("nome"):
+        full_name = str(authenticated_user.get("nome_completo") or authenticated_user["nome"]).strip()
+        age = authenticated_user.get("eta")
+        age_suffix = f", {age} anni" if age is not None else ""
+        profile_header = (
+            f"Utente autenticato corrente dal database: {full_name}{age_suffix}. "
+            "Quando serve personalizzare la risposta, usa questo nome per rivolgerti all'utente.\n"
+            f"{empty_dataset_note}"
+            "Contesto profilo utente corrente dal database:\n"
+        )
+    elif empty_dataset_note:
+        profile_header = f"{empty_dataset_note}{profile_header}"
 
     if isinstance(user_content, str):
         return f"{profile_header}{profile_context}\n\nRichiesta utente:\n{user_content}"
@@ -769,21 +867,105 @@ def resolve_month_window(month: str | None = None, *, today: date | None = None)
     }
 
 
-def _fetch_all_movements(session: Any) -> list[MovimentoBancario]:
-    statement = select(MovimentoBancario).order_by(
-        MovimentoBancario.data.desc(),
-        MovimentoBancario.descrizione.asc(),
-        MovimentoBancario.importo.asc(),
+def _fetch_all_movements(
+    session: Any,
+    *,
+    user_id: int | None = None,
+) -> list[MovimentoBancario]:
+    statement = _scope_movement_statement(
+        select(MovimentoBancario).order_by(
+            MovimentoBancario.data.desc(),
+            MovimentoBancario.descrizione.asc(),
+            MovimentoBancario.importo.asc(),
+        ),
+        user_id=user_id,
     )
     return list(session.exec(statement))
 
 
-def _fetch_movements_between(session: Any, *, start_date: date, end_date: date) -> list[MovimentoBancario]:
-    statement = (
+def _fixed_expense_rows_for_month(
+    movements: list[MovimentoBancario],
+    *,
+    start_date: date,
+    end_date: date,
+    month_label: str,
+    preview_limit: int,
+) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+
+    for movement in movements:
+        if movement.importo >= 0 or movement.macrocategoria != MacroCategoriaSpesa.SPESE_FISSE.value:
+            continue
+        if movement.data < start_date or movement.data > end_date:
+            continue
+
+        canonical_key = _canonical_description(movement.descrizione)
+        amount = abs(float(movement.importo))
+        current = grouped.get(canonical_key)
+
+        if current is None:
+            grouped[canonical_key] = {
+                "chiave": canonical_key,
+                "descrizione": movement.descrizione,
+                "categoria": movement.categoria,
+                "totale_mese": amount,
+                "numero_movimenti": 1,
+                "ultima_data": movement.data.isoformat(),
+                "ultimo_importo": amount,
+            }
+            continue
+
+        current["totale_mese"] += amount
+        current["numero_movimenti"] += 1
+        if movement.data.isoformat() > current["ultima_data"]:
+            current["descrizione"] = movement.descrizione
+            current["categoria"] = movement.categoria
+            current["ultima_data"] = movement.data.isoformat()
+            current["ultimo_importo"] = amount
+
+    rows = []
+    for current in grouped.values():
+        total_month = _round_money(float(current["totale_mese"])) or 0.0
+        rows.append(
+            {
+                "chiave": current["chiave"],
+                "descrizione": current["descrizione"],
+                "categoria": current["categoria"],
+                "mese_riferimento": month_label,
+                "spesa_totale_mese_riferimento": total_month,
+                "media_mensile_sui_mesi_disponibili": total_month,
+                "media_mensile_quando_presente": total_month,
+                "totale_periodo": total_month,
+                "mesi_presenti": [month_label],
+                "mesi_presenti_count": 1,
+                "numero_movimenti": current["numero_movimenti"],
+                "ultima_data": current["ultima_data"],
+                "ultimo_importo": _round_money(float(current["ultimo_importo"])) or 0.0,
+            }
+        )
+
+    rows.sort(
+        key=lambda row: (
+            -(row["spesa_totale_mese_riferimento"] or 0.0),
+            row["descrizione"].casefold(),
+        )
+    )
+    return rows[:preview_limit]
+
+
+def _fetch_movements_between(
+    session: Any,
+    *,
+    start_date: date,
+    end_date: date,
+    user_id: int | None = None,
+) -> list[MovimentoBancario]:
+    statement = _scope_movement_statement(
         select(MovimentoBancario)
         .where(MovimentoBancario.data >= start_date)
         .where(MovimentoBancario.data <= end_date)
-        .order_by(MovimentoBancario.data.desc(), MovimentoBancario.descrizione.asc(), MovimentoBancario.importo.asc())
+        .order_by(MovimentoBancario.data.desc(), MovimentoBancario.descrizione.asc(), MovimentoBancario.importo.asc()),
+        user_id=user_id,
     )
     return list(session.exec(statement))
 
@@ -907,85 +1089,53 @@ def build_fixed_expense_monthly_summary(
 ) -> dict[str, Any]:
     today = reference_date or date.today()
     current_month_start = today.replace(day=1)
+    previous_complete_month = _previous_complete_month_window(reference_date=today)
+    previous_month_label = str(previous_complete_month["label"])
+    previous_month_start = previous_complete_month["start_date"]
+    previous_month_end = previous_complete_month["end_date"]
     complete_months = _complete_month_labels_before(current_month_start, movements)
     fixed_movements = [
         movement
         for movement in movements
         if movement.importo < 0 and movement.macrocategoria == MacroCategoriaSpesa.SPESE_FISSE.value
     ]
+    current_month_total = _expense_total([movement for movement in fixed_movements if movement.data >= current_month_start])
 
-    if not complete_months:
-        current_month_total = _expense_total([movement for movement in fixed_movements if movement.data >= current_month_start])
+    if previous_month_label not in complete_months:
         return {
-            "mesi_completi_disponibili": [],
+            "mese_riferimento": previous_month_label,
+            "mesi_completi_disponibili": complete_months,
             "spese_fisse_mensili_stimate": None,
             "spese_fisse_mese_corrente": current_month_total,
             "dettaglio_voci": [],
-            "message": "Non ci sono mesi completi precedenti disponibili: posso mostrarti solo il mese corrente.",
+            "message": (
+                "Il mese completo precedente non e' disponibile nel dataset: "
+                "posso mostrarti solo il mese corrente."
+            ),
         }
 
-    grouped: dict[str, dict[str, Any]] = {}
-    for movement in fixed_movements:
-        if movement.data >= current_month_start:
-            continue
-        canonical_key = _canonical_description(movement.descrizione)
-        month_key = _month_bucket(movement.data)
-        amount = abs(float(movement.importo))
-        current = grouped.get(canonical_key)
-
-        if current is None:
-            grouped[canonical_key] = {
-                "descrizione": movement.descrizione,
-                "categoria": movement.categoria,
-                "totale_periodo": amount,
-                "mesi_presenti": {month_key},
-                "ultima_data": movement.data.isoformat(),
-                "ultimo_importo": amount,
-            }
-            continue
-
-        current["totale_periodo"] += amount
-        current["mesi_presenti"].add(month_key)
-        if movement.data.isoformat() > current["ultima_data"]:
-            current["descrizione"] = movement.descrizione
-            current["categoria"] = movement.categoria
-            current["ultima_data"] = movement.data.isoformat()
-            current["ultimo_importo"] = amount
-
-    rows: list[dict[str, Any]] = []
-    for current in grouped.values():
-        media_sui_mesi_disponibili = float(current["totale_periodo"]) / len(complete_months)
-        mesi_presenti = sorted(current["mesi_presenti"])
-        rows.append(
-            {
-                "descrizione": current["descrizione"],
-                "categoria": current["categoria"],
-                "media_mensile_sui_mesi_disponibili": _round_money(media_sui_mesi_disponibili),
-                "media_mensile_quando_presente": _round_money(float(current["totale_periodo"]) / len(mesi_presenti)),
-                "totale_periodo": _round_money(float(current["totale_periodo"])),
-                "mesi_presenti": mesi_presenti,
-                "mesi_presenti_count": len(mesi_presenti),
-                "ultima_data": current["ultima_data"],
-                "ultimo_importo": _round_money(float(current["ultimo_importo"])),
-            }
-        )
-
-    rows.sort(
-        key=lambda row: (
-            -(row["media_mensile_sui_mesi_disponibili"] or 0.0),
-            row["descrizione"].casefold(),
-        )
+    reference_month_movements = [
+        movement
+        for movement in fixed_movements
+        if previous_month_start <= movement.data <= previous_month_end
+    ]
+    rows = _fixed_expense_rows_for_month(
+        reference_month_movements,
+        start_date=previous_month_start,
+        end_date=previous_month_end,
+        month_label=previous_month_label,
+        preview_limit=preview_limit,
     )
 
-    total_estimated = _round_money(sum(row["media_mensile_sui_mesi_disponibili"] or 0.0 for row in rows))
-    current_month_total = _expense_total([movement for movement in fixed_movements if movement.data >= current_month_start])
+    total_estimated = _expense_total(reference_month_movements)
 
     return {
+        "mese_riferimento": previous_month_label,
         "mesi_completi_disponibili": complete_months,
         "spese_fisse_mensili_stimate": total_estimated,
         "spese_fisse_mese_corrente": current_month_total,
-        "dettaglio_voci": rows[:preview_limit],
-        "message": "Le spese fisse mensili sono stimate usando `macrocategoria = Spese Fisse` sui mesi completi disponibili.",
+        "dettaglio_voci": rows,
+        "message": "Le spese fisse mensili usano `macrocategoria = Spese Fisse` del mese completo precedente.",
     }
 
 

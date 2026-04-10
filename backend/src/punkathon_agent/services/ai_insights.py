@@ -10,13 +10,14 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from punkathon_agent.db import create_database, get_session
-from punkathon_agent.models.db import USER_PROFILE_ID, Utente
+from punkathon_agent.models.db import Utente
 from punkathon_agent.punkagent.runtime import build_chat_model
 from punkathon_agent.services.spending import (
     _build_period_summary,
     _build_recurring_item_breakdown,
     _fetch_all_movements,
     _fetch_movements_between,
+    _get_or_create_user_profile,
     _round_money,
     _serialize_profile,
     _sync_budget_fields,
@@ -246,18 +247,23 @@ def _normalize_generated_insights(
     ]
 
 
-def generate_goal_based_sidebar_insights(reference_date: date | None = None) -> dict[str, Any]:
+def generate_goal_based_sidebar_insights(
+    reference_date: date | None = None,
+    *,
+    user_id: int | None = None,
+) -> dict[str, Any]:
     create_database()
     analysis_window = _last_three_month_window(reference_date)
 
     with get_session() as session:
-        profile = session.get(Utente, USER_PROFILE_ID) or Utente(id=USER_PROFILE_ID)
+        profile = _get_or_create_user_profile(session, user_id=user_id)
         _sync_budget_fields(profile)
-        all_movements = _fetch_all_movements(session)
+        all_movements = _fetch_all_movements(session, user_id=user_id)
         recent_movements = _fetch_movements_between(
             session,
             start_date=analysis_window["start_date"],
             end_date=analysis_window["end_date"],
+            user_id=user_id,
         )
 
     context = _build_recent_context(
