@@ -40,17 +40,17 @@ export function WeeklyOverview({
       <div className="flex items-center gap-4">
         <button
           onClick={handlePrevMonth}
-          className="p-1 text-gray-400 hover:text-gray-600 transition-colors"
+          className="p-1 text-gray-400 transition-colors hover:text-gray-600 dark:text-slate-500 dark:hover:text-slate-200"
           aria-label="Mese precedente"
         >
           <ChevronLeft className="w-5 h-5" />
         </button>
 
-        <span className="text-sm font-medium text-gray-600 w-36 text-center">{monthLabel}</span>
+        <span className="w-36 text-center text-sm font-medium text-gray-600 dark:text-slate-300">{monthLabel}</span>
 
         <button
           onClick={handleNextMonth}
-          className="p-1 text-gray-400 hover:text-gray-600 transition-colors"
+          className="p-1 text-gray-400 transition-colors hover:text-gray-600 dark:text-slate-500 dark:hover:text-slate-200"
           aria-label="Mese successivo"
         >
           <ChevronRight className="w-5 h-5" />
@@ -75,16 +75,18 @@ export function WeeklyOverview({
           return (
             <div key={i} className="flex flex-col items-center">
               <div className="text-center mb-2">
-                <div className="text-[10px] text-gray-500 font-medium">Settimana {i + 1}</div>
-                <div className="text-[9px] text-gray-400">{fmt(weekStart)} – {fmt(weekEnd)}</div>
+                <div className="text-[10px] font-medium text-gray-500 dark:text-slate-400">Settimana {i + 1}</div>
+                <div className="text-[9px] text-gray-400 dark:text-slate-500">{fmt(weekStart)} – {fmt(weekEnd)}</div>
               </div>
 
               <div
                 className={`w-14 h-14 rounded-full flex items-center justify-center border-2 transition-colors ${
-                  isOverBudget ? 'border-gray-400 bg-gray-100' : 'border-gray-300 bg-white'
+                  isOverBudget
+                    ? 'border-gray-400 bg-gray-100 dark:border-amber-500/40 dark:bg-amber-500/10'
+                    : 'border-gray-300 bg-white dark:border-slate-700 dark:bg-slate-900'
                 }`}
               >
-                <div className="text-sm font-semibold text-gray-700">{spent.toFixed(0)}€</div>
+                <div className="text-sm font-semibold text-gray-700 dark:text-slate-100">{spent.toFixed(0)}€</div>
               </div>
             </div>
           );

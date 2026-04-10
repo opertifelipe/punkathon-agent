@@ -166,6 +166,7 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
 
   const classificationSchema = pageData?.classification_schema ?? null;
   const availableCategories = categoriesForMacro(classificationSchema, formState.macrocategoria);
+  const allCategories = classificationSchema?.categorie ?? [];
 
   const loadStatementPage = async (filters?: {
     year?: number;
@@ -182,7 +183,7 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
       setSelectedMonth(response.filters.selected_month);
       setSelectedWeek(response.filters.selected_week);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Impossibile caricare l’estratto conto.');
+      setError(loadError instanceof Error ? loadError.message : "Impossibile caricare l'estratto conto.");
     } finally {
       setIsLoading(false);
     }
@@ -310,21 +311,21 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-gray-50">
+    <div className="fixed inset-0 z-50 bg-gray-50 dark:bg-slate-950">
       <div className="flex h-screen flex-col">
-        <div className="border-b border-gray-200 bg-white px-6 py-4 shadow-sm">
+        <div className="border-b border-gray-200 bg-white px-6 py-4 shadow-sm dark:border-slate-800 dark:bg-slate-950 dark:shadow-none">
           <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <button
                 onClick={onClose}
-                className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700"
+                className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-slate-500 dark:hover:bg-slate-900 dark:hover:text-slate-200"
                 aria-label="Torna alla chat"
               >
                 <ArrowLeft className="h-5 w-5" />
               </button>
               <div>
-                <h2 className="text-xl font-semibold text-gray-900">Estratto conto</h2>
-                <p className="text-sm text-gray-500">
+                <h2 className="text-xl font-semibold text-gray-900 dark:text-slate-100">Estratto conto</h2>
+                <p className="text-sm text-gray-500 dark:text-slate-400">
                   Modifica, cancella o aggiungi manualmente le operazioni del conto.
                 </p>
               </div>
@@ -333,7 +334,7 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
             <div className="flex items-center gap-3">
               <button
                 onClick={() => void refreshCurrentView()}
-                className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
                 disabled={isLoading}
               >
                 {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
@@ -341,7 +342,8 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
               </button>
               <button
                 onClick={openCreateDialog}
-                className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-gray-800"
+                disabled={isLoading || !pageData}
+                className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-gray-800 dark:bg-emerald-500/85 dark:text-slate-950 dark:hover:bg-emerald-400"
               >
                 <Plus className="h-4 w-4" />
                 Nuova transazione
@@ -352,9 +354,9 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
 
         <div className="flex-1 overflow-y-auto px-6 py-6">
           <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
-            <div className="grid gap-4 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm lg:grid-cols-[1.2fr_1fr_auto] lg:items-end">
+            <div className="grid gap-4 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm lg:grid-cols-[1.2fr_1fr_auto] lg:items-end dark:border-slate-800 dark:bg-slate-900/80 dark:shadow-none">
               <div className="grid gap-4 sm:grid-cols-3">
-                <label className="flex flex-col gap-2 text-sm font-medium text-gray-700">
+                <label className="flex flex-col gap-2 text-sm font-medium text-gray-700 dark:text-slate-300">
                   <span>Anno</span>
                   <Select
                     value={selectedYear ? String(selectedYear) : undefined}
@@ -381,7 +383,7 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
                   </Select>
                 </label>
 
-                <label className="flex flex-col gap-2 text-sm font-medium text-gray-700">
+                <label className="flex flex-col gap-2 text-sm font-medium text-gray-700 dark:text-slate-300">
                   <span>Mese</span>
                   <Select
                     value={selectedMonth ? String(selectedMonth) : undefined}
@@ -408,7 +410,7 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
                   </Select>
                 </label>
 
-                <label className="flex flex-col gap-2 text-sm font-medium text-gray-700">
+                <label className="flex flex-col gap-2 text-sm font-medium text-gray-700 dark:text-slate-300">
                   <span>Settimana</span>
                   <Select
                     value={selectedWeek ? String(selectedWeek) : undefined}
@@ -436,8 +438,8 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
                 </label>
               </div>
 
-              <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600">
-                <div className="flex items-center gap-2 font-medium text-gray-800">
+              <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">
+                <div className="flex items-center gap-2 font-medium text-gray-800 dark:text-slate-100">
                   <CalendarRange className="h-4 w-4" />
                   {pageData?.filters.month_label ?? 'Caricamento periodo...'}
                 </div>
@@ -447,8 +449,8 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
               </div>
 
               <div className="text-right">
-                <div className="text-sm text-gray-500">Operazioni mostrate</div>
-                <div className="text-2xl font-semibold text-gray-900">{pageData?.total_transactions ?? 0}</div>
+                <div className="text-sm text-gray-500 dark:text-slate-400">Operazioni mostrate</div>
+                <div className="text-2xl font-semibold text-gray-900 dark:text-slate-100">{pageData?.total_transactions ?? 0}</div>
               </div>
             </div>
 
@@ -458,16 +460,16 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
               </div>
             ) : null}
 
-            <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
+            <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900/80 dark:shadow-none">
               {isLoading && !pageData ? (
-                <div className="flex min-h-64 items-center justify-center gap-3 text-sm text-gray-500">
+                <div className="flex min-h-64 items-center justify-center gap-3 text-sm text-gray-500 dark:text-slate-400">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   Caricamento estratto conto...
                 </div>
               ) : pageData && pageData.transactions.length > 0 ? (
                 <Table>
                   <TableHeader>
-                    <TableRow className="bg-gray-50/80 hover:bg-gray-50/80">
+                    <TableRow className="bg-gray-50/80 hover:bg-gray-50/80 dark:bg-slate-950/70 dark:hover:bg-slate-950/70">
                       <TableHead className="px-4">Data</TableHead>
                       <TableHead className="px-4">Descrizione</TableHead>
                       <TableHead className="px-4">Importo</TableHead>
@@ -479,33 +481,33 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
                   <TableBody>
                     {pageData.transactions.map((transaction) => (
                       <TableRow key={transaction.id}>
-                        <TableCell className="px-4 font-medium text-gray-700">
+                        <TableCell className="px-4 font-medium text-gray-700 dark:text-slate-200">
                           {formatDate(transaction.data)}
                         </TableCell>
                         <TableCell className="px-4 align-top">
                           <div className="max-w-md whitespace-normal">
-                            <div className="font-medium text-gray-900">{transaction.descrizione}</div>
+                            <div className="font-medium text-gray-900 dark:text-slate-100">{transaction.descrizione}</div>
                             {transaction.note ? (
-                              <div className="mt-1 text-xs leading-5 text-gray-500">{transaction.note}</div>
+                              <div className="mt-1 text-xs leading-5 text-gray-500 dark:text-slate-400">{transaction.note}</div>
                             ) : null}
                           </div>
                         </TableCell>
                         <TableCell className="px-4">
-                          <span className={`font-semibold ${transaction.importo >= 0 ? 'text-emerald-600' : 'text-gray-800'}`}>
+                          <span className={`font-semibold ${transaction.importo >= 0 ? 'text-emerald-600 dark:text-emerald-300' : 'text-gray-800 dark:text-slate-100'}`}>
                             {formatCurrency(transaction.importo)}
                           </span>
                         </TableCell>
-                        <TableCell className="px-4 text-gray-700">
+                        <TableCell className="px-4 text-gray-700 dark:text-slate-300">
                           {transaction.macrocategoria ?? 'Non assegnata'}
                         </TableCell>
-                        <TableCell className="px-4 text-gray-700">
+                        <TableCell className="px-4 text-gray-700 dark:text-slate-300">
                           {transaction.categoria ?? 'Non assegnata'}
                         </TableCell>
                         <TableCell className="px-4">
                           <div className="flex justify-end gap-2">
                             <button
                               onClick={() => openEditDialog(transaction)}
-                              className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                              className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-950"
                             >
                               <Pencil className="h-4 w-4" />
                               Modifica
@@ -531,14 +533,14 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
               ) : (
                 <div className="flex min-h-72 flex-col items-center justify-center gap-4 px-6 text-center">
                   <div>
-                    <h3 className="text-lg font-semibold text-gray-900">Nessuna operazione nel periodo selezionato</h3>
-                    <p className="mt-2 text-sm text-gray-500">
+                    <h3 className="text-lg font-semibold text-gray-900 dark:text-slate-100">Nessuna operazione nel periodo selezionato</h3>
+                    <p className="mt-2 text-sm text-gray-500 dark:text-slate-400">
                       Cambia mese, anno o settimana, oppure aggiungi una nuova transazione manuale.
                     </p>
                   </div>
                   <button
                     onClick={openCreateDialog}
-                    className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-gray-800"
+                    className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-gray-800 dark:bg-emerald-500/85 dark:text-slate-950 dark:hover:bg-emerald-400"
                   >
                     <Plus className="h-4 w-4" />
                     Aggiungi transazione
@@ -571,55 +573,55 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
 
           <form className="grid gap-4" onSubmit={handleSubmit}>
             <div className="grid gap-4 sm:grid-cols-2">
-              <label className="flex flex-col gap-2 text-sm font-medium text-gray-700">
+              <label className="flex flex-col gap-2 text-sm font-medium text-gray-700 dark:text-slate-300">
                 <span>Data</span>
                 <input
                   type="date"
                   value={formState.data}
                   onChange={(event) => setFormState((current) => ({ ...current, data: event.target.value }))}
-                  className="h-10 rounded-md border border-gray-200 px-3 text-sm outline-none transition-colors focus:border-gray-400"
+                  className="h-10 rounded-md border border-gray-200 px-3 text-sm outline-none transition-colors focus:border-gray-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-slate-500"
                   required
                 />
               </label>
 
-              <label className="flex flex-col gap-2 text-sm font-medium text-gray-700">
+              <label className="flex flex-col gap-2 text-sm font-medium text-gray-700 dark:text-slate-300">
                 <span>Importo</span>
                 <input
                   type="number"
                   step="0.01"
                   value={formState.importo}
                   onChange={(event) => setFormState((current) => ({ ...current, importo: event.target.value }))}
-                  className="h-10 rounded-md border border-gray-200 px-3 text-sm outline-none transition-colors focus:border-gray-400"
-                  placeholder="Usa negativo per una spesa, positivo per un’entrata"
+                  className="h-10 rounded-md border border-gray-200 px-3 text-sm outline-none transition-colors focus:border-gray-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-slate-500"
+                  placeholder="Usa negativo per una spesa, positivo per un'entrata"
                   required
                 />
               </label>
             </div>
 
-            <label className="flex flex-col gap-2 text-sm font-medium text-gray-700">
+            <label className="flex flex-col gap-2 text-sm font-medium text-gray-700 dark:text-slate-300">
               <span>Descrizione</span>
               <input
                 type="text"
                 value={formState.descrizione}
                 onChange={(event) => setFormState((current) => ({ ...current, descrizione: event.target.value }))}
-                className="h-10 rounded-md border border-gray-200 px-3 text-sm outline-none transition-colors focus:border-gray-400"
+                className="h-10 rounded-md border border-gray-200 px-3 text-sm outline-none transition-colors focus:border-gray-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-slate-500"
                 placeholder="Es: Spesa supermercato"
                 required
               />
             </label>
 
-            <label className="flex flex-col gap-2 text-sm font-medium text-gray-700">
+            <label className="flex flex-col gap-2 text-sm font-medium text-gray-700 dark:text-slate-300">
               <span>Nota</span>
               <textarea
                 value={formState.note}
                 onChange={(event) => setFormState((current) => ({ ...current, note: event.target.value }))}
-                className="min-h-24 rounded-md border border-gray-200 px-3 py-2 text-sm outline-none transition-colors focus:border-gray-400"
+                className="min-h-24 rounded-md border border-gray-200 px-3 py-2 text-sm outline-none transition-colors focus:border-gray-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-slate-500"
                 placeholder="Aggiungi un contesto opzionale"
               />
             </label>
 
             <div className="grid gap-4 sm:grid-cols-2">
-              <label className="flex flex-col gap-2 text-sm font-medium text-gray-700">
+              <label className="flex flex-col gap-2 text-sm font-medium text-gray-700 dark:text-slate-300">
                 <span>Macrocategoria</span>
                 <Select value={formState.macrocategoria} onValueChange={handleMacroChange}>
                   <SelectTrigger>
@@ -635,14 +637,14 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
                 </Select>
               </label>
 
-              <label className="flex flex-col gap-2 text-sm font-medium text-gray-700">
+              <label className="flex flex-col gap-2 text-sm font-medium text-gray-700 dark:text-slate-300">
                 <span>Categoria</span>
                 <Select value={formState.categoria} onValueChange={handleCategoryChange}>
                   <SelectTrigger>
                     <SelectValue placeholder="Seleziona categoria" />
                   </SelectTrigger>
                   <SelectContent>
-                    {availableCategories.map((categoria) => (
+                    {allCategories.map((categoria) => (
                       <SelectItem key={categoria} value={categoria}>
                         {categoria}
                       </SelectItem>
@@ -662,14 +664,14 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
               <button
                 type="button"
                 onClick={() => setIsDialogOpen(false)}
-                className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900"
               >
                 Annulla
               </button>
               <button
                 type="submit"
                 disabled={isSaving}
-                className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-500/85 dark:text-slate-950 dark:hover:bg-emerald-400"
               >
                 {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 {editingTransaction ? 'Salva modifiche' : 'Crea transazione'}

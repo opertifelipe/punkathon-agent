@@ -20,9 +20,9 @@ interface ChatAreaProps {
 function ThinkingBox({ reasoning }: { reasoning: string }) {
   return (
     <div className="flex justify-start mb-1">
-      <div className="flex items-start gap-2 max-w-[80%] bg-gray-100 border border-gray-200 rounded-xl px-3 py-2">
-        <span className="mt-0.5 shrink-0 w-2 h-2 rounded-full bg-gray-400 animate-pulse" />
-        <div className="text-xs text-gray-500 italic leading-snug line-clamp-2 overflow-hidden">
+      <div className="flex max-w-[80%] items-start gap-2 rounded-xl border border-gray-200 bg-gray-100 px-3 py-2 dark:border-slate-800 dark:bg-slate-900">
+        <span className="mt-0.5 h-2 w-2 shrink-0 animate-pulse rounded-full bg-gray-400 dark:bg-slate-500" />
+        <div className="overflow-hidden text-xs italic leading-snug text-gray-500 line-clamp-2 dark:text-slate-400">
           {reasoning ? (
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{reasoning}</ReactMarkdown>
           ) : (
@@ -45,8 +45,8 @@ export function ChatArea({ messages, onSuggestionClick }: ChatAreaProps) {
     return (
       <div className="flex-1 overflow-y-auto px-4 py-8 flex items-center justify-center">
         <div className="max-w-5xl mx-auto text-center">
-          <h1 className="text-4xl font-bold text-gray-800">PunkAgent</h1>
-          <p className="mt-3 text-sm text-gray-500">
+          <h1 className="text-4xl font-bold text-gray-800 dark:text-slate-100">PunkAgent</h1>
+          <p className="mt-3 text-sm text-gray-500 dark:text-slate-400">
             Il tuo assistente personale per la gestione finanziaria
           </p>
         </div>
@@ -57,8 +57,8 @@ export function ChatArea({ messages, onSuggestionClick }: ChatAreaProps) {
   return (
     <div className="flex-1 overflow-y-auto px-4 py-8">
       <div className="max-w-5xl mx-auto">
-        <div className="text-center mb-8 pb-4 border-b border-gray-200">
-          <h2 className="text-xl font-bold text-gray-800">PunkAgent</h2>
+        <div className="mb-8 border-b border-gray-200 pb-4 text-center dark:border-slate-800">
+          <h2 className="text-xl font-bold text-gray-800 dark:text-slate-100">PunkAgent</h2>
         </div>
 
         <div className="space-y-6">
@@ -75,11 +75,11 @@ export function ChatArea({ messages, onSuggestionClick }: ChatAreaProps) {
                   <div
                     className={`max-w-[80%] rounded-2xl px-4 py-3 ${
                       message.role === 'user'
-                        ? 'bg-gray-700 text-white'
-                        : 'bg-gray-200 text-gray-800'
+                        ? 'bg-gray-700 text-white dark:bg-emerald-500/20 dark:text-emerald-50'
+                        : 'bg-gray-200 text-gray-800 dark:bg-slate-900 dark:text-slate-100'
                     }`}
                   >
-                    <div className={`text-sm leading-relaxed prose prose-sm max-w-none ${message.role === 'user' ? 'prose-invert' : 'prose-gray'}`}>
+                    <div className={`prose prose-sm max-w-none text-sm leading-relaxed ${message.role === 'user' ? 'prose-invert' : 'prose-gray dark:prose-invert'}`}>
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
                     </div>
                     {message.attachments && message.attachments.length > 0 && (

@@ -31,7 +31,7 @@ from punkathon_agent.models.api import (
     StatementTransaction,
     StatementTransactionWrite,
 )
-from punkathon_agent.models.db import USER_PROFILE_ID, MovimentoBancario, Utente
+from punkathon_agent.models.db import DEFAULT_USER_GOAL, USER_PROFILE_ID, MovimentoBancario, Utente
 from punkathon_agent.models.finance import serialize_classification_schema
 from punkathon_agent.punkagent import (
     get_punk_agent,
@@ -241,6 +241,26 @@ def _statement_transactions_between(
     return [_serialize_statement_transaction(item) for item in session.exec(statement).all()]
 
 
+def _ensure_user_profile(session: Session) -> Utente:
+    utente = session.get(Utente, USER_PROFILE_ID)
+    changed = False
+
+    if utente is None:
+        utente = Utente(id=USER_PROFILE_ID)
+        changed = True
+
+    if not (utente.obiettivo or "").strip():
+        utente.obiettivo = DEFAULT_USER_GOAL
+        changed = True
+
+    if changed:
+        session.add(utente)
+        session.commit()
+        session.refresh(utente)
+
+    return utente
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -337,9 +357,7 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
 
 @app.get("/utente", response_model=UtenteResponse)
 def get_utente(session: Session = Depends(get_db)) -> UtenteResponse:
-    utente = session.get(Utente, USER_PROFILE_ID)
-    if utente is None:
-        raise HTTPException(status_code=404, detail="Profilo utente non trovato")
+    utente = _ensure_user_profile(session)
 
     today = date.today()
     first_day = today.replace(day=1)
@@ -361,14 +379,12 @@ def get_utente(session: Session = Depends(get_db)) -> UtenteResponse:
 
 @app.patch("/utente", response_model=UtenteResponse)
 def patch_utente(payload: UtenteUpdate, session: Session = Depends(get_db)) -> UtenteResponse:
-    utente = session.get(Utente, USER_PROFILE_ID)
-    if utente is None:
-        utente = Utente(id=USER_PROFILE_ID)
+    utente = _ensure_user_profile(session)
 
     if payload.stipendio_mensile is not None:
         utente.stipendio_mensile = payload.stipendio_mensile
     if payload.obiettivo is not None:
-        utente.obiettivo = payload.obiettivo
+        utente.obiettivo = payload.obiettivo.strip() or DEFAULT_USER_GOAL
 
     if utente.stipendio_mensile is not None and utente.spese_fisse_essenziali_mensili is not None:
         utente.disponibile_mensile = utente.stipendio_mensile - utente.spese_fisse_essenziali_mensili

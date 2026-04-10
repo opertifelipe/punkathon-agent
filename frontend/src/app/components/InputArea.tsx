@@ -39,11 +39,11 @@ export function InputArea({ onSendMessage, disabled = false }: InputAreaProps) {
 
   return (
     <>
-      <div className="bg-white rounded-2xl shadow-lg border border-gray-200 overflow-hidden">
+      <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-lg dark:border-slate-800 dark:bg-slate-900 dark:shadow-none">
         <div className="flex items-center gap-3 p-4">
           <button 
             onClick={handleFileAttach}
-            className="text-gray-400 hover:text-gray-600 transition-colors"
+            className="text-gray-400 transition-colors hover:text-gray-600 dark:text-slate-500 dark:hover:text-slate-200"
             aria-label="Allega file"
           >
             <Paperclip className="w-5 h-5" />
@@ -54,12 +54,12 @@ export function InputArea({ onSendMessage, disabled = false }: InputAreaProps) {
             onChange={(e) => setInput(e.target.value)}
             onKeyPress={handleKeyPress}
             placeholder="Aggiungi una spesa, scatta una foto di una ricevuta o fai una domanda..."
-            className="flex-1 outline-none text-gray-700 placeholder:text-gray-400"
+            className="flex-1 bg-transparent text-gray-700 outline-none placeholder:text-gray-400 dark:text-slate-100 dark:placeholder:text-slate-500"
           />
           <button
             onClick={handleSubmit}
             disabled={disabled || (!input.trim() && attachedFiles.length === 0)}
-            className="bg-gray-700 hover:bg-gray-800 text-white rounded-lg p-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="rounded-lg bg-gray-700 p-2 text-white transition-colors hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-emerald-500/80 dark:hover:bg-emerald-500"
           >
             <Send className="w-5 h-5" />
           </button>
@@ -71,12 +71,12 @@ export function InputArea({ onSendMessage, disabled = false }: InputAreaProps) {
             {attachedFiles.map((file, index) => (
               <div
                 key={index}
-                className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-lg flex items-center gap-1"
+                className="flex items-center gap-1 rounded-lg bg-gray-100 px-2 py-1 text-xs text-gray-600 dark:bg-slate-950 dark:text-slate-300"
               >
                 <span>{file.name}</span>
                 <button
                   onClick={() => setAttachedFiles(attachedFiles.filter((_, i) => i !== index))}
-                  className="text-gray-400 hover:text-gray-600"
+                  className="text-gray-400 hover:text-gray-600 dark:text-slate-500 dark:hover:text-slate-200"
                 >
                   ×
                 </button>

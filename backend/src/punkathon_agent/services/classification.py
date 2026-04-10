@@ -62,6 +62,9 @@ MEDICAL_KEYWORDS = {
     "unobravo",
     "visita",
 }
+SATISPAY_KEYWORDS = {"satispay"}
+PRELIEVI_KEYWORDS = {"prelievi", "prelievo", "prelievo sportello", "prelievo bancomat"}
+BONIFICI_KEYWORDS = {"bonific", "giroconti in uscita", "giroconto", "giroconti"}
 
 
 def _resolve_openai_api_key() -> str | None:
@@ -110,7 +113,9 @@ Regole obbligatorie:
 - Se il movimento e' ambiguo, usa `Altro Non Essenziale`.
 - I movimenti forniti qui sono spese o uscite: non usare `Entrate`.
 - Il campo `note` puo' contenere hint forti dalla fonte originale, come categoria banca o stato di contabilizzazione: usalo.
-- Se nelle note compare `giroconti in uscita`, `prelievi` o un trasferimento/bonifico verso il proprietario del conto, non usare mai `Affitto o Mutuo`: in assenza di una categoria perfetta usa `Altro Non Essenziale`.
+- Se nelle note o nella descrizione compare `satispay`, classifica come `Satispay`.
+- Se nelle note o nella descrizione compare `prelievi`, `prelievo sportello` o `prelievo bancomat`, classifica come `Prelievi`.
+- Se nelle note o nella descrizione compare `giroconti in uscita`, `giroconto` o un trasferimento/bonifico in uscita che non e' chiaramente affitto, classifica come `Bonifici` e non come `Affitto o Mutuo`.
 - Se nelle note compare `generi alimentari e supermercato`, classifica come `Alimentazione` salvo contraddizioni evidenti nella descrizione.
 - `Ristoranti` e `Bar` sono categorie distinte: non unirle mai. Se il merchant sembra un bar, buffet, caffe', pub o aperitivo usa `Bar`; se sembra pizzeria, ristorante, paninoteca o simili usa `Ristoranti`.
 - `Spese Mediche` e `Farmacia` sono categorie distinte: non unirle mai. Se il merchant e' una farmacia o parafarmacia usa `Farmacia`; per visite, terapie, psicologo, cliniche e spese sanitarie usa `Spese Mediche`.
@@ -202,8 +207,14 @@ def _rule_based_classification(movimento: dict[str, Any]) -> ClassificazioneMovi
     if not combined:
         return None
 
-    if "giroconti in uscita" in combined or "prelievi" in combined or "prelievo sportello" in description:
-        return _classification_from_category(CategoriaSpesa.ALTRO_NON_ESSENZIALE)
+    if _contains_any_hint(combined, SATISPAY_KEYWORDS):
+        return _classification_from_category(CategoriaSpesa.SATISPAY)
+
+    if _contains_any_hint(combined, PRELIEVI_KEYWORDS):
+        return _classification_from_category(CategoriaSpesa.PRELIEVI)
+
+    if _contains_any_hint(combined, BONIFICI_KEYWORDS):
+        return _classification_from_category(CategoriaSpesa.BONIFICI)
 
     if "generi alimentari e supermercato" in combined:
         return _classification_from_category(CategoriaSpesa.ALIMENTAZIONE)

@@ -7,6 +7,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from punkathon_agent.cli.api import app
+from punkathon_agent.db import engine as app_engine
 from punkathon_agent.punkagent.attachments import build_user_message_content
 from punkathon_agent.punkagent.request_context import reset_frontend_context, set_frontend_context
 from punkathon_agent.services.spending import resolve_week_window
@@ -42,6 +43,10 @@ FRONTEND_CONTEXT = {
 class FrontendWeekContextTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        self.client.close()
+        app_engine.dispose()
 
     def test_build_user_message_content_includes_frontend_weekly_overview(self) -> None:
         content = build_user_message_content(

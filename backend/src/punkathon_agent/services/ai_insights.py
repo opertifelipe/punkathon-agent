@@ -43,8 +43,8 @@ _SIDEBAR_INSIGHTS_PROMPT = ChatPromptTemplate.from_messages(
 Devi generare insight brevi, chiari e concreti in italiano, usando solo i dati forniti.
 
 Vincoli obbligatori:
-- restituisci al massimo 2 `positive_insights`
-- restituisci al massimo 2 `attention_points`
+- restituisci al massimo 3 `positive_insights`
+- restituisci al massimo 3 `attention_points`
 - ogni titolo deve essere breve e specifico
 - ogni descrizione deve essere pratica, legata ai numeri o ai pattern osservati
 - non inventare dati, percentuali o trend non presenti nel contesto
@@ -208,8 +208,8 @@ def _normalize_generated_insights(
     seen: set[tuple[str, str]] = set()
 
     for insight_type, rows in (
-        ("success", payload.positive_insights[:2]),
-        ("warning", payload.attention_points[:2]),
+        ("success", payload.positive_insights[:3]),
+        ("warning", payload.attention_points[:3]),
     ):
         for row in rows:
             title = _clean_text(row.title, max_length=72)

@@ -19,17 +19,6 @@ import {
   GeneratedInsight,
 } from './api/client';
 
-export interface Transaction {
-  id: string;
-  type: 'income' | 'expense';
-  description: string;
-  amount: number;
-  isFixed: boolean;
-  week?: number;
-  date: string;
-  category?: string;
-}
-
 export interface Insight {
   id: string;
   type: 'warning' | 'success';
@@ -42,6 +31,10 @@ const MESI = [
   'Gennaio', 'Febbraio', 'Marzo', 'Aprile', 'Maggio', 'Giugno',
   'Luglio', 'Agosto', 'Settembre', 'Ottobre', 'Novembre', 'Dicembre',
 ];
+const DEFAULT_USER_GOAL = 'Controllare le spese';
+const THEME_STORAGE_KEY = 'punkagent-theme-mode';
+
+type ThemeMode = 'light' | 'dark';
 
 function App() {
   // ---------------------------------------------------------------------------
@@ -50,6 +43,18 @@ function App() {
   const [showStorico, setShowStorico] = useState(false);
   const [showSidebar, setShowSidebar] = useState(false);
   const [showInsights, setShowInsights] = useState(false);
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
+    if (typeof window === 'undefined') {
+      return 'light';
+    }
+
+    const storedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (storedTheme === 'light' || storedTheme === 'dark') {
+      return storedTheme;
+    }
+
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
 
   // ---------------------------------------------------------------------------
   // Stato dati backend
@@ -112,15 +117,24 @@ function App() {
     localStorage.setItem('messages', JSON.stringify(messages));
   }, [messages]);
 
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', themeMode === 'dark');
+    document.documentElement.style.colorScheme = themeMode;
+    window.localStorage.setItem(THEME_STORAGE_KEY, themeMode);
+  }, [themeMode]);
+
   // ---------------------------------------------------------------------------
   // Valori derivati dal profilo utente
   // ---------------------------------------------------------------------------
-  const stipendio = utenteProfile?.stipendio_mensile ?? 0;
+  const stipendio = utenteProfile?.stipendio_mensile ?? null;
   const speseFissi = utenteProfile?.spese_fisse_essenziali_mensili ?? 0;
-  const disponibile = utenteProfile?.disponibile_mensile ?? stipendio - speseFissi;
-  const settimanale = disponibile / 5;
+  const disponibile = stipendio === null
+    ? null
+    : (utenteProfile?.disponibile_mensile ?? stipendio - speseFissi);
+  const settimanale = disponibile === null ? null : disponibile / 5;
+  const settimanaleBudget = settimanale ?? 0;
   const risparmio = utenteProfile?.risparmio_mensile ?? 0;
-  const userGoal = utenteProfile?.obiettivo ?? '';
+  const userGoal = (utenteProfile?.obiettivo ?? '').trim() || DEFAULT_USER_GOAL;
   const weeklyExpenses = weeklyData.map((w) => w.total);
   const frontendContext: FrontendContext | null = weeklyData.length
     ? {
@@ -279,7 +293,7 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gray-50 text-gray-900 transition-colors dark:bg-slate-950 dark:text-slate-100">
       {/* Sidebar */}
       <Sidebar
         stipendio={stipendio}
@@ -295,6 +309,8 @@ function App() {
         onOpenEstrattoConto={() => setShowStorico(true)}
         onGenerateInsights={handleGenerateInsights}
         isGeneratingInsights={isGeneratingInsights}
+        themeMode={themeMode}
+        onThemeChange={setThemeMode}
       />
 
       {/* Main content */}
@@ -304,7 +320,7 @@ function App() {
           {/* Hamburger menu - left */}
           <button
             onClick={() => setShowSidebar(true)}
-            className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
+            className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:text-slate-500 dark:hover:bg-slate-900 dark:hover:text-slate-200"
           >
             <Menu className="w-6 h-6" />
           </button>
@@ -313,14 +329,14 @@ function App() {
           <div className="flex items-center gap-3">
             <button
               onClick={handleNewConversation}
-              className="p-2 text-gray-400 hover:text-gray-600 transition-colors flex items-center gap-2"
+              className="flex items-center gap-2 rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:text-slate-500 dark:hover:bg-slate-900 dark:hover:text-slate-200"
             >
               <PlusCircle className="w-5 h-5" />
               <span className="text-sm font-medium">Nuova conversazione</span>
             </button>
             <button
               onClick={() => setShowInsights(true)}
-              className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
+              className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:text-slate-500 dark:hover:bg-slate-900 dark:hover:text-slate-200"
               aria-label="Mostra insights"
             >
               <ChevronLeft className="w-6 h-6" />
@@ -343,7 +359,7 @@ function App() {
           <div className="mb-6 pb-6">
             <WeeklyOverview
               weeklyExpenses={weeklyExpenses}
-              settimanale={settimanale}
+              settimanale={settimanaleBudget}
               startDate={weeklyStartDate}
               onStartDateChange={setWeeklyStartDate}
             />
@@ -355,7 +371,6 @@ function App() {
       <StoricoPanel
         isOpen={showStorico}
         onClose={() => setShowStorico(false)}
-        transactions={[]}
       />
 
       {/* Insights Sidebar */}

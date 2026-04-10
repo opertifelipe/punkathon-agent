@@ -5,6 +5,7 @@ from datetime import date
 from sqlmodel import Field, SQLModel
 
 USER_PROFILE_ID = 1
+DEFAULT_USER_GOAL = "Controllare le spese"
 
 
 class MovimentoBancario(SQLModel, table=True):
@@ -26,6 +27,6 @@ class Utente(SQLModel, table=True):
     spese_fisse_essenziali_mensili: float | None = Field(default=None)
     disponibile_mensile: float | None = Field(default=None)
     disponibile_settimanale: float | None = Field(default=None)
-    obiettivo: str | None = Field(default=None)
+    obiettivo: str | None = Field(default=DEFAULT_USER_GOAL)
     spese_irrinunciabili: str | None = Field(default=None)
     risparmio: float | None = Field(default=None)

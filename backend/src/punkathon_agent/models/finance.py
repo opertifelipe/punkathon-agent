@@ -38,6 +38,9 @@ class CategoriaSpesa(str, Enum):
     VESTITI = "Vestiti"
     FIGLI = "Figli"
     PET = "Pet"
+    SATISPAY = "Satispay"
+    BONIFICI = "Bonifici"
+    PRELIEVI = "Prelievi"
     AMAZON = "Amazon"
     ALTRO_NON_ESSENZIALE = "Altro Non Essenziale"
     ENTRATE = "Entrate"
@@ -65,6 +68,9 @@ CATEGORIA_TO_MACRO_CATEGORIA = {
     CategoriaSpesa.VESTITI: MacroCategoriaSpesa.SPESE_VARIABILI,
     CategoriaSpesa.FIGLI: MacroCategoriaSpesa.SPESE_VARIABILI,
     CategoriaSpesa.PET: MacroCategoriaSpesa.SPESE_VARIABILI,
+    CategoriaSpesa.SATISPAY: MacroCategoriaSpesa.SPESE_VARIABILI,
+    CategoriaSpesa.BONIFICI: MacroCategoriaSpesa.SPESE_VARIABILI,
+    CategoriaSpesa.PRELIEVI: MacroCategoriaSpesa.SPESE_VARIABILI,
     CategoriaSpesa.AMAZON: MacroCategoriaSpesa.SPESE_VARIABILI,
     CategoriaSpesa.ALTRO_NON_ESSENZIALE: MacroCategoriaSpesa.SPESE_VARIABILI,
     CategoriaSpesa.ENTRATE: MacroCategoriaSpesa.ENTRATE,

@@ -26,17 +26,19 @@ class AiInsightsServiceTests(unittest.TestCase):
             ["2026-02", "2026-03", "2026-04"],
         )
 
-    def test_normalize_generated_insights_caps_buckets_to_two(self) -> None:
+    def test_normalize_generated_insights_caps_buckets_to_three(self) -> None:
         payload = SidebarInsightsLLMOutput(
             positive_insights=[
                 SidebarInsightDraft(title="Positivo 1", description="Desc 1"),
                 SidebarInsightDraft(title="Positivo 2", description="Desc 2"),
                 SidebarInsightDraft(title="Positivo 3", description="Desc 3"),
+                SidebarInsightDraft(title="Positivo 4", description="Desc 4"),
             ],
             attention_points=[
                 SidebarInsightDraft(title="Attenzione 1", description="Desc A"),
                 SidebarInsightDraft(title="Attenzione 2", description="Desc B"),
                 SidebarInsightDraft(title="Attenzione 3", description="Desc C"),
+                SidebarInsightDraft(title="Attenzione 4", description="Desc D"),
             ],
         )
 
@@ -45,13 +47,16 @@ class AiInsightsServiceTests(unittest.TestCase):
             generated_at=datetime(2026, 4, 8, 10, 30, tzinfo=timezone.utc),
         )
 
-        self.assertEqual(sum(1 for item in insights if item["type"] == "success"), 2)
-        self.assertEqual(sum(1 for item in insights if item["type"] == "warning"), 2)
+        self.assertEqual(sum(1 for item in insights if item["type"] == "success"), 3)
+        self.assertEqual(sum(1 for item in insights if item["type"] == "warning"), 3)
 
 
 class AiInsightsApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        self.client.close()
 
     @patch("punkathon_agent.cli.api.generate_goal_based_sidebar_insights")
     def test_generate_insights_endpoint_returns_payload(self, mocked_generate: unittest.mock.Mock) -> None:
