@@ -10,7 +10,7 @@ from typing import Any
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import ExpiredSignatureError, InvalidTokenError
 from openai import AuthenticationError
@@ -24,7 +24,11 @@ from punkathon_agent.models.api import (
     ChatRequest,
     ChatResponse,
     FrontendWeekBox,
+    GeneratedInsight,
+    InsightsAvailabilityResponse,
     InsightsResponse,
+    InsightSpeechRequest,
+    SingleInsightRequest,
     StatementClassificationSchema,
     StatementBulkDeleteResponse,
     StatementDeleteResponse,
@@ -41,8 +45,15 @@ from punkathon_agent.punkagent import (
     run_agent_turn_streaming,
     serialize_conversation,
 )
+from punkathon_agent.services.statement_pdf_import import import_statement_pdf_attachments
 from punkathon_agent.services.spending import _ensure_estimated_fixed_expenses, _sync_budget_fields
-from punkathon_agent.services.ai_insights import generate_goal_based_sidebar_insights
+from punkathon_agent.services.ai_insights import (
+    get_sidebar_insights_availability,
+    generate_goal_based_sidebar_insights,
+    generate_single_goal_based_insight,
+)
+from punkathon_agent.services.insight_tts import synthesize_insight_audio
+from punkathon_agent.services.users import claim_legacy_data_for_first_user, ensure_user_profile
 
 
 class AuthUserResponse(BaseModel):
@@ -142,9 +153,9 @@ ITALIAN_MONTHS = [
 bearer_scheme = HTTPBearer(auto_error=False)
 
 app = FastAPI(
-    title="PunkAgent API",
+    title="Aurora API",
     version="0.1.0",
-    description="API FastAPI per interrogare PunkAgent in modalita' classica o streaming.",
+    description="API FastAPI per interrogare Aurora in modalita' classica o streaming.",
 )
 
 
@@ -202,9 +213,19 @@ def _run_automatic_attachment_import(
     attachments: list[dict[str, str]],
     user_id: int,
 ) -> tuple[str, bool]:
-    if not attachments:
-        return "", False
+    return asyncio.run(
+        _run_automatic_attachment_import_async(
+            attachments=attachments,
+            user_id=user_id,
+        )
+    )
 
+
+def _run_agent_attachment_import(
+    *,
+    attachments: list[dict[str, str]],
+    user_id: int,
+) -> tuple[str, bool]:
     answer, _conversation, reload = run_agent_turn(
         get_punk_agent(),
         [],
@@ -213,6 +234,62 @@ def _run_automatic_attachment_import(
         user_id=user_id,
     )
     return answer, reload
+
+
+async def _run_automatic_attachment_import_async(
+    *,
+    attachments: list[dict[str, str]],
+    user_id: int,
+) -> tuple[str, bool]:
+    if not attachments:
+        return "", False
+
+    pdf_attachments = [attachment for attachment in attachments if attachment["mime_type"] == "application/pdf"]
+    legacy_attachments = [attachment for attachment in attachments if attachment["mime_type"] != "application/pdf"]
+
+    summaries: list[str] = []
+    reload_required = False
+
+    if pdf_attachments:
+        pdf_summary, pdf_reload = await import_statement_pdf_attachments(
+            pdf_attachments,
+            user_id=user_id,
+        )
+        if pdf_summary:
+            summaries.append(pdf_summary)
+        reload_required = reload_required or pdf_reload
+
+    if legacy_attachments:
+        legacy_summary, legacy_reload = await asyncio.to_thread(
+            _run_agent_attachment_import,
+            attachments=legacy_attachments,
+            user_id=user_id,
+        )
+        if legacy_summary:
+            summaries.append(legacy_summary)
+        reload_required = reload_required or legacy_reload
+
+    return "\n\n".join(summary for summary in summaries if summary), reload_required
+
+
+def _build_attachment_import_status_message(attachments: list[dict[str, str]]) -> str:
+    has_pdf = any(attachment["mime_type"] == "application/pdf" for attachment in attachments)
+    has_images = any(attachment["mime_type"].startswith("image/") for attachment in attachments)
+
+    if has_pdf and has_images:
+        return (
+            "Import automatico allegati in corso. Sto dividendo i PDF in pagine, facendo OCR per pagina ed estraendo i movimenti dal testo in parallelo, "
+            "salvando i movimenti nel database e gestendo le immagini con il flusso normale."
+        )
+    if has_pdf:
+        return (
+            "Import automatico PDF in corso. Sto dividendo l'estratto conto in pagine, facendo OCR per pagina ed estraendo i movimenti dal testo in parallelo "
+            "e salvando subito i movimenti nel database."
+        )
+    return (
+        "Import automatico allegati in corso. Sto salvando i movimenti nel database "
+        "e ricalcolando subito le spese fisse."
+    )
 
 
 def _sse_event(event_name: str, payload: dict[str, Any]) -> str:
@@ -259,28 +336,8 @@ def _movement_by_identity(
     return session.exec(statement).first()
 
 
-def _profile_for_user(session: Session, user_id: int) -> Utente | None:
-    return session.exec(select(Utente).where(Utente.user_id == user_id)).first()
-
-
 def _ensure_user_profile(session: Session, user_id: int) -> Utente:
-    utente = _profile_for_user(session, user_id)
-    changed = False
-
-    if utente is None:
-        utente = Utente(user_id=user_id)
-        changed = True
-
-    if not (utente.obiettivo or "").strip():
-        utente.obiettivo = DEFAULT_USER_GOAL
-        changed = True
-
-    if changed:
-        session.add(utente)
-        session.commit()
-        session.refresh(utente)
-
-    return utente
+    return ensure_user_profile(session, user_id)
 
 
 def _sync_profile_fixed_expenses(session: Session, utente: Utente, *, user_id: int) -> Utente:
@@ -306,30 +363,7 @@ def _sync_profile_fixed_expenses(session: Session, utente: Utente, *, user_id: i
 
 
 def _claim_legacy_data_for_first_user(session: Session, user_id: int) -> None:
-    total_users = session.exec(select(func.count()).select_from(PunkUser)).one()
-    if int(total_users or 0) != 1:
-        _ensure_user_profile(session, user_id)
-        return
-
-    legacy_profile = session.exec(
-        select(Utente).where(Utente.user_id.is_(None)).order_by(Utente.id.asc())
-    ).first()
-    if legacy_profile is not None:
-        legacy_profile.user_id = user_id
-        if not (legacy_profile.obiettivo or "").strip():
-            legacy_profile.obiettivo = DEFAULT_USER_GOAL
-        session.add(legacy_profile)
-    else:
-        session.add(Utente(user_id=user_id, obiettivo=DEFAULT_USER_GOAL))
-
-    orphan_movements = session.exec(
-        select(MovimentoBancario).where(MovimentoBancario.user_id.is_(None))
-    ).all()
-    for movement in orphan_movements:
-        movement.user_id = user_id
-        session.add(movement)
-
-    session.commit()
+    claim_legacy_data_for_first_user(session, user_id)
 
 
 def _expense_total_between(session: Session, *, user_id: int, start_date: date, end_date: date) -> float:
@@ -541,6 +575,86 @@ def generate_insights(current_user: PunkUser = Depends(get_current_user)) -> Ins
     return InsightsResponse(**payload)
 
 
+@app.get("/insights/status", response_model=InsightsAvailabilityResponse)
+def insights_status(current_user: PunkUser = Depends(get_current_user)) -> InsightsAvailabilityResponse:
+    if current_user.id is None:
+        raise HTTPException(status_code=500, detail="Utente senza identificatore persistito.")
+
+    try:
+        payload = get_sidebar_insights_availability(user_id=current_user.id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Impossibile verificare la disponibilita' degli insights: {exc}",
+        ) from exc
+
+    return InsightsAvailabilityResponse(**payload)
+
+
+@app.post("/insights/generate-one", response_model=GeneratedInsight)
+async def generate_single_insight(
+    payload: SingleInsightRequest,
+    current_user: PunkUser = Depends(get_current_user),
+) -> GeneratedInsight:
+    if current_user.id is None:
+        raise HTTPException(status_code=500, detail="Utente senza identificatore persistito.")
+
+    try:
+        insight = await generate_single_goal_based_insight(
+            insight_type=payload.type,
+            focus_hint=payload.focus_hint,
+            existing_titles=payload.existing_titles,
+            user_id=current_user.id,
+        )
+    except AuthenticationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Impossibile generare l'insight AI: verifica la configurazione OpenAI.",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Impossibile generare l'insight AI: {exc}",
+        ) from exc
+
+    return GeneratedInsight(**insight)
+
+
+@app.post("/insights/text-to-speech")
+def insight_text_to_speech(
+    payload: InsightSpeechRequest,
+    current_user: PunkUser = Depends(get_current_user),
+) -> Response:
+    if current_user.id is None:
+        raise HTTPException(status_code=500, detail="Utente senza identificatore persistito.")
+
+    try:
+        audio_bytes = synthesize_insight_audio(payload.text)
+    except AuthenticationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Impossibile generare l'audio dell'insight: verifica la configurazione OpenAI.",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Impossibile generare l'audio dell'insight: {exc}",
+        ) from exc
+
+    return Response(
+        content=audio_bytes,
+        media_type="audio/mpeg",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": 'inline; filename="insight.mp3"',
+        },
+    )
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest, current_user: PunkUser = Depends(get_current_user)) -> ChatResponse:
     if current_user.id is None:
@@ -594,13 +708,10 @@ async def chat_stream(
                 await queue.put(
                     {
                         "type": "reasoning",
-                        "content": (
-                            "Import automatico allegati in corso. Sto salvando i movimenti nel database "
-                            "e ricalcolando subito le spese fisse."
-                        ),
+                        "content": _build_attachment_import_status_message(attachments_payload),
                     }
                 )
-                _import_answer, preload_reload = _run_automatic_attachment_import(
+                _import_answer, preload_reload = await _run_automatic_attachment_import_async(
                     attachments=attachments_payload,
                     user_id=current_user.id,
                 )

@@ -559,6 +559,23 @@ wheels = [
 ]
 
 [[package]]
+name = "elevenlabs"
+version = "2.42.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pydantic-core" },
+    { name = "requests" },
+    { name = "typing-extensions" },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f5/df/1774d90a3a6db0f990dc25e2830ce1edb7a9951e05b7a357db1ea314e227/elevenlabs-2.42.0.tar.gz", hash = "sha256:eeee74c51724429c06950bad4c4798b66641ac6b220811b05a7ce1c5dfb03026", size = 537572, upload-time = "2026-04-07T17:42:40.645Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/86/27/4fa9ee48d0e9f2ec7efd4d59b0a6ded7807e395e56be57330482a51d7bd7/elevenlabs-2.42.0-py3-none-any.whl", hash = "sha256:d255e64ef406375db8b59264babc944cb295eeffc0786b4f8f82485ac62c49ae", size = 1470209, upload-time = "2026-04-07T17:42:38.876Z" },
+]
+
+[[package]]
 name = "executing"
 version = "2.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2124,6 +2141,7 @@ source = { editable = "backend" }
 dependencies = [
     { name = "azure-ai-documentintelligence" },
     { name = "deepagents" },
+    { name = "elevenlabs" },
     { name = "fastapi" },
     { name = "jupyter" },
     { name = "langchain" },
@@ -2147,6 +2165,7 @@ dependencies = [
 requires-dist = [
     { name = "azure-ai-documentintelligence", specifier = ">=1.0.2" },
     { name = "deepagents", specifier = ">=0.4.12" },
+    { name = "elevenlabs", specifier = ">=2.42.0" },
     { name = "fastapi", specifier = ">=0.135.3" },
     { name = "jupyter", specifier = ">=1.1.1" },
     { name = "langchain", specifier = ">=1.2.14" },

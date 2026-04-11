@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -137,16 +137,16 @@ class FrontendWeekContextTests(unittest.TestCase):
 
     @patch("punkathon_agent.cli.api.get_punk_agent")
     @patch("punkathon_agent.cli.api.run_agent_turn")
+    @patch("punkathon_agent.cli.api.import_statement_pdf_attachments", new_callable=AsyncMock)
     def test_chat_endpoint_auto_imports_attachments_before_answer(
         self,
+        mocked_import_statement_pdf_attachments: AsyncMock,
         mocked_run_agent_turn: unittest.mock.Mock,
         mocked_get_punk_agent: unittest.mock.Mock,
     ) -> None:
         mocked_get_punk_agent.return_value = object()
-        mocked_run_agent_turn.side_effect = [
-            ("import ok", [], True),
-            ("risposta finale", [], False),
-        ]
+        mocked_import_statement_pdf_attachments.return_value = ("pdf import ok", True)
+        mocked_run_agent_turn.return_value = ("risposta finale", [], False)
 
         response = self.client.post(
             "/chat",
@@ -164,14 +164,53 @@ class FrontendWeekContextTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
+        mocked_import_statement_pdf_attachments.assert_awaited_once()
+        self.assertEqual(mocked_run_agent_turn.call_count, 1)
+        visible_call = mocked_run_agent_turn.call_args
+
+        self.assertEqual(visible_call.kwargs["inline_attachments"], [])
+        self.assertIn("tentativo di import automatico", visible_call.args[2])
+        self.assertTrue(response.json()["reload"])
+
+    @patch("punkathon_agent.cli.api.get_punk_agent")
+    @patch("punkathon_agent.cli.api.run_agent_turn")
+    @patch("punkathon_agent.cli.api.import_statement_pdf_attachments", new_callable=AsyncMock)
+    def test_chat_endpoint_keeps_image_attachments_on_legacy_import_path(
+        self,
+        mocked_import_statement_pdf_attachments: AsyncMock,
+        mocked_run_agent_turn: unittest.mock.Mock,
+        mocked_get_punk_agent: unittest.mock.Mock,
+    ) -> None:
+        mocked_get_punk_agent.return_value = object()
+        mocked_run_agent_turn.side_effect = [
+            ("import immagine ok", [], True),
+            ("risposta finale", [], False),
+        ]
+
+        response = self.client.post(
+            "/chat",
+            json={
+                "message": "",
+                "conversation": [],
+                "attachments": [
+                    {
+                        "filename": "receipt.png",
+                        "mime_type": "image/png",
+                        "base64_data": "ZmFrZS1pbWFnZQ==",
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mocked_import_statement_pdf_attachments.assert_not_awaited()
         self.assertEqual(mocked_run_agent_turn.call_count, 2)
         preload_call = mocked_run_agent_turn.call_args_list[0]
         visible_call = mocked_run_agent_turn.call_args_list[1]
 
         self.assertEqual(preload_call.args[1], [])
-        self.assertEqual(preload_call.kwargs["inline_attachments"][0]["filename"], "statement.pdf")
+        self.assertEqual(preload_call.kwargs["inline_attachments"][0]["filename"], "receipt.png")
         self.assertEqual(visible_call.kwargs["inline_attachments"], [])
-        self.assertIn("tentativo di import automatico", visible_call.args[2])
         self.assertTrue(response.json()["reload"])
 
 

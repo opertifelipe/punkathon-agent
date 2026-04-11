@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from enum import StrEnum
 import shlex
 import sys
@@ -10,7 +11,7 @@ from typing import Any
 import typer
 from dotenv import load_dotenv
 
-from punkathon_agent.db import DB_PATH, rebuild_database
+from punkathon_agent.db import DB_PATH, get_session, rebuild_database
 from punkathon_agent.punkagent import (
     get_punk_agent,
     resolve_attachment_path,
@@ -18,10 +19,11 @@ from punkathon_agent.punkagent import (
     supported_attachment_formats,
 )
 from punkathon_agent.punkagent.constants import PROJECT_ROOT
+from punkathon_agent.services.users import resolve_default_cli_user
 
 app = typer.Typer(
     add_completion=False,
-    help="CLI unificata per chat, API, database e strumenti di PunkAgent.",
+    help="CLI unificata per chat, API, database e strumenti di Aurora.",
 )
 
 EXIT_COMMANDS = {"exit", "quit", "q", "/exit"}
@@ -40,13 +42,19 @@ class GraphFormat(StrEnum):
     PNG = "png"
 
 
+@dataclass(frozen=True, slots=True)
+class CliDefaultContext:
+    user_id: int
+    frontend_context: dict[str, Any] | None = None
+
+
 def _default_graph_output_path(graph_format: GraphFormat) -> Path:
     suffix_by_format = {
         GraphFormat.ASCII: ".txt",
         GraphFormat.MERMAID: ".mmd",
         GraphFormat.PNG: ".png",
     }
-    return PROJECT_ROOT / "docs" / f"punkagent-langgraph{suffix_by_format[graph_format]}"
+    return PROJECT_ROOT / "docs" / f"aurora-langgraph{suffix_by_format[graph_format]}"
 
 
 def _print_attachment_help() -> None:
@@ -109,7 +117,7 @@ def _handle_chat_command(user_input: str, queued_attachments: list[Path]) -> tup
 
 
 def _print_welcome() -> None:
-    typer.echo("PunkAgent avviato. Scrivi una richiesta su spese, movimenti e insight settimanali o mensili.")
+    typer.echo("Aurora avviata. Scrivi una richiesta su spese, movimenti e insight settimanali o mensili.")
     typer.echo("Comandi di uscita: exit, quit, q, /exit")
     _print_attachment_help()
 
@@ -119,6 +127,9 @@ async def _stream_cli_turn(
     conversation: list[Any],
     user_input: str,
     queued_attachments: list[Path],
+    *,
+    user_id: int,
+    frontend_context: dict[str, Any] | None = None,
 ) -> tuple[str, list[Any]]:
     current_section: str | None = None
     saw_answer = False
@@ -151,6 +162,8 @@ async def _stream_cli_turn(
         conversation,
         user_input,
         attachment_paths=queued_attachments,
+        frontend_context=frontend_context,
+        user_id=user_id,
         on_event=on_event,
     )
 
@@ -167,20 +180,31 @@ async def _stream_cli_turn(
 def chat(
     prompt: str | None = typer.Argument(default=None, help="Messaggio iniziale opzionale."),
 ) -> None:
-    """Avvia una chat terminale con PunkAgent collegato al database SQLite."""
+    """Avvia una chat terminale con Aurora collegata al database SQLite."""
     _run_chat_session(prompt)
 
 
 @app.command()
 def api() -> None:
-    """Avvia la API FastAPI di PunkAgent."""
+    """Avvia la API FastAPI di Aurora."""
     from .api import main as api_main
 
     api_main()
 
 
+def _resolve_default_cli_context() -> CliDefaultContext:
+    with get_session() as session:
+        user = resolve_default_cli_user(session)
+
+    if user.id is None:
+        raise RuntimeError("Utente CLI senza identificatore persistito.")
+
+    return CliDefaultContext(user_id=user.id)
+
+
 def _run_chat_session(prompt: str | None = None) -> None:
     load_dotenv()
+    cli_context = _resolve_default_cli_context()
     agent = get_punk_agent()
     conversation: list[Any] = []
     queued_attachments: list[Path] = []
@@ -218,6 +242,8 @@ def _run_chat_session(prompt: str | None = None) -> None:
                     conversation,
                     normalized_input,
                     queued_attachments,
+                    user_id=cli_context.user_id,
+                    frontend_context=cli_context.frontend_context,
                 )
             )
         except Exception as exc:
@@ -273,7 +299,7 @@ def graph(
         None,
         "--output",
         "-o",
-        help="Percorso file di output. Se omesso usa docs/punkagent-langgraph.<estensione>.",
+        help="Percorso file di output. Se omesso usa docs/aurora-langgraph.<estensione>.",
     ),
     stdout: bool = typer.Option(
         False,
@@ -281,7 +307,7 @@ def graph(
         help="Stampa il grafo su stdout invece di salvarlo su file. Disponibile per ascii e mermaid.",
     ),
 ) -> None:
-    """Genera il grafo LangGraph del PunkAgent usando i renderer nativi di LangGraph."""
+    """Genera il grafo LangGraph di Aurora usando i renderer nativi di LangGraph."""
     artifact = _build_graph_artifact(format, output, stdout)
 
     if stdout:

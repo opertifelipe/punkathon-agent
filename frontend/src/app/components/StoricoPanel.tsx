@@ -45,6 +45,7 @@ import {
 interface StoricoPanelProps {
   isOpen: boolean;
   onClose: () => void;
+  onTransactionsChanged?: () => Promise<void> | void;
 }
 
 interface TransactionFormState {
@@ -143,7 +144,7 @@ function buildInitialFormState(
   };
 }
 
-export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
+export function StoricoPanel({ isOpen, onClose, onTransactionsChanged }: StoricoPanelProps) {
   const [pageData, setPageData] = useState<StatementPageResponse | null>(null);
   const [selectedYear, setSelectedYear] = useState<number | null>(null);
   const [selectedMonth, setSelectedMonth] = useState<number | null>(null);
@@ -280,7 +281,8 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
         await createStatementTransaction(payload);
       }
       setIsDialogOpen(false);
-      window.location.reload();
+      await refreshCurrentView();
+      await onTransactionsChanged?.();
     } catch (saveError) {
       setFormError(saveError instanceof Error ? saveError.message : 'Salvataggio non riuscito.');
     } finally {
@@ -298,7 +300,8 @@ export function StoricoPanel({ isOpen, onClose }: StoricoPanelProps) {
 
     try {
       await deleteStatementTransaction(transaction.id);
-      window.location.reload();
+      await refreshCurrentView();
+      await onTransactionsChanged?.();
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : 'Cancellazione non riuscita.');
     } finally {

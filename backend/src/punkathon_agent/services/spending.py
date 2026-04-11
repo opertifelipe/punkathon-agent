@@ -221,10 +221,12 @@ def _calculate_available_budget(
     stipendio_mensile: float | None,
     spese_fisse_essenziali_mensili: float | None,
 ) -> tuple[float | None, float | None]:
-    if stipendio_mensile is None or spese_fisse_essenziali_mensili is None:
+    if stipendio_mensile is None:
         return None, None
 
-    disponibile_mensile = _round_money(stipendio_mensile - spese_fisse_essenziali_mensili)
+    _ = spese_fisse_essenziali_mensili
+
+    disponibile_mensile = _round_money(stipendio_mensile * 0.7)
     if disponibile_mensile is None:
         return None, None
     disponibile_settimanale = _round_money(disponibile_mensile / 5)
@@ -300,7 +302,7 @@ def build_fixed_expense_context(
         "valore_mensile": _round_money(profile.spese_fisse_essenziali_mensili),
         "stato": fixed_expenses_status,
         "metodo_calcolo": "totale `macrocategoria = Spese Fisse` del mese completo precedente",
-        "usa_per": ["budget", "obiettivo", "margine disponibile"],
+        "usa_per": ["monitoraggio", "obiettivo", "insight"],
     }
 
     if fixed_expenses_evidence:
@@ -315,7 +317,8 @@ def build_fixed_expense_context(
         "confronto_automatico_consigliato": False,
         "nota": (
             "Il profilo usa lo stesso totale delle spese fisse da macrocategoria, "
-            "sincronizzato sul mese completo precedente per budget e margine disponibile."
+            "sincronizzato sul mese completo precedente per monitoraggio e insight. "
+            "Il disponibile, invece, segue sempre il 70% dello stipendio."
         ),
     }
 
@@ -1223,7 +1226,7 @@ def build_goal_insight_payload(
     if goal_missing:
         alerts.append("Manca un obiettivo salvato nel profilo: l'insight puo' solo descrivere la traiettoria, non l'arrivo.")
     if remaining is None:
-        alerts.append("Il budget disponibile non e' calcolabile: manca stipendio o stima affidabile delle spese fisse essenziali.")
+        alerts.append("Il budget disponibile non e' calcolabile: manca lo stipendio mensile.")
     elif remaining < 0:
         alerts.append("Hai gia' superato il margine disponibile per questo periodo.")
     elif budget_limit is not None and remaining <= (budget_limit * 0.2):

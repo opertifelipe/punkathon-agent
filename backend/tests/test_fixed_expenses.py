@@ -78,7 +78,8 @@ class FixedExpenseReasoningTests(unittest.TestCase):
         )
 
         self.assertEqual(context["richiesta_generica_utente"]["usa"], "spese_fisse_da_macrocategoria")
-        self.assertIn("budget", context["profilo_utente"]["usa_per"])
+        self.assertIn("monitoraggio", context["profilo_utente"]["usa_per"])
+        self.assertIn("70% dello stipendio", context["nota"])
         self.assertFalse(context["confronto_automatico_consigliato"])
 
     def test_fixed_expense_scope_payload_can_expose_compact_macro_summary(self) -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-AGENT_NAME = "PunkAgent"
+AGENT_NAME = "Aurora"
 DEEPAGENTS_AGENT_NAME = "punkagent"
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]

@@ -43,11 +43,11 @@ export function ChatArea({ messages, onSuggestionClick }: ChatAreaProps) {
 
   if (messages.length === 0) {
     return (
-      <div className="flex-1 overflow-y-auto px-4 py-8 flex items-center justify-center">
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-4 py-8">
         <div className="max-w-5xl mx-auto text-center">
-          <h1 className="text-4xl font-bold text-gray-800 dark:text-slate-100">PunkAgent</h1>
+          <h1 className="text-4xl font-bold text-gray-800 dark:text-slate-100">Aurora</h1>
           <p className="mt-3 text-sm text-gray-500 dark:text-slate-400">
-            Il tuo assistente personale per la gestione finanziaria
+            Analisi dei dati e abitudini per una gestione finanziaria piu' consapevole
           </p>
         </div>
       </div>
@@ -55,10 +55,10 @@ export function ChatArea({ messages, onSuggestionClick }: ChatAreaProps) {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-8">
+    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-8">
       <div className="max-w-5xl mx-auto">
         <div className="mb-8 border-b border-gray-200 pb-4 text-center dark:border-slate-800">
-          <h2 className="text-xl font-bold text-gray-800 dark:text-slate-100">PunkAgent</h2>
+          <h2 className="text-xl font-bold text-gray-800 dark:text-slate-100">Aurora</h2>
         </div>
 
         <div className="space-y-6">

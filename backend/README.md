@@ -61,6 +61,7 @@ uv run punkagent chat
 ```
 
 La chat streamma reasoning e risposta finale in tempo reale.
+La CLI usa automaticamente un contesto utente locale: se esiste gia' almeno un account persistito riusa il primo utente disponibile, altrimenti crea un utente di servizio `cli@punkagent.local` e gli associa eventuali dati legacy senza `user_id`.
 
 Per comodita', `uv run punkagent` senza sottocomandi continua ad avviare direttamente la chat.
 

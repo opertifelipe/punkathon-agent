@@ -141,6 +141,7 @@ class StatementApiTests(unittest.TestCase):
                 Utente(
                     user_id=self.primary_user_id,
                     obiettivo=DEFAULT_USER_GOAL,
+                    stipendio_mensile=2000.0,
                     spese_fisse_essenziali_mensili=75.33,
                 )
             )
@@ -182,6 +183,7 @@ class StatementApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["spese_fisse_essenziali_mensili"], 149.58)
+        self.assertEqual(body["disponibile_mensile"], 1400.0)
 
         with Session(self.engine, expire_on_commit=False) as session:
             profile = session.exec(select(Utente).where(Utente.user_id == self.primary_user_id)).first()
@@ -189,6 +191,19 @@ class StatementApiTests(unittest.TestCase):
         self.assertIsNotNone(profile)
         assert profile is not None
         self.assertEqual(profile.spese_fisse_essenziali_mensili, 149.58)
+        self.assertEqual(profile.disponibile_mensile, 1400.0)
+
+    def test_patch_utente_uses_70_percent_of_salary_for_available_budget(self) -> None:
+        response = self.client.patch(
+            "/utente",
+            json={"stipendio_mensile": 2500.0},
+            headers=self.auth_headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["stipendio_mensile"], 2500.0)
+        self.assertEqual(body["disponibile_mensile"], 1750.0)
 
     def test_statement_transaction_crud_roundtrip(self) -> None:
         create_response = self.client.post(

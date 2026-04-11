@@ -79,10 +79,29 @@ class GeneratedInsight(BaseModel):
     timestamp: str = Field(min_length=1)
 
 
+class SingleInsightRequest(BaseModel):
+    type: Literal["success", "warning"]
+    focus_hint: str | None = Field(default=None, max_length=240)
+    existing_titles: list[str] = Field(default_factory=list)
+
+
+class InsightSpeechRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class InsightsAvailabilityResponse(BaseModel):
+    has_recent_records: bool
+    recent_records_count: int = Field(default=0, ge=0)
+    window_start: str = Field(min_length=1)
+    window_end: str = Field(min_length=1)
+
+
 class InsightsResponse(BaseModel):
     generated_at: str = Field(min_length=1)
     window_start: str = Field(min_length=1)
     window_end: str = Field(min_length=1)
+    has_recent_records: bool = True
+    recent_records_count: int = Field(default=0, ge=0)
     insights: list[GeneratedInsight] = Field(default_factory=list)
 
 

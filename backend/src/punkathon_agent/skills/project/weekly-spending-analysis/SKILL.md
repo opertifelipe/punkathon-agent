@@ -12,9 +12,11 @@ description: Use this skill when the user asks for a weekly spending review, a s
 
 ## Workflow
 1. Use `analizza_spese_settimana`.
-2. If no week is specified, use the current week.
-3. Read `confronto_settimane_precedenti`, `budget` and `top_spese`.
-4. Surface the few numbers that matter and end with practical next moves.
+2. If the user is specifically asking how much they can still spend in the current week, use `calcola_budget_residuo_settimana` instead.
+3. If no week is specified, use the current week.
+4. Read `confronto_settimane_precedenti`, `budget` and `top_spese`.
+5. For residual-budget questions, use `budget_settimanale - spese_gia_fatte` and do not bring in monthly fixed expenses unless explicitly asked.
+6. Surface the few numbers that matter and end with practical next moves.
 
 ## Guardrails
 - Do not silently switch to monthly analysis.

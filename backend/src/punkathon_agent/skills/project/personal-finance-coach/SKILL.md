@@ -17,6 +17,7 @@ description: Use this skill when the user asks for practical advice on how to im
    - `analizza_spese_complessive` for general behavior and long-term patterns.
    - `analizza_spese_per_categoria` for a specific category problem or cost-cutting target.
    - `analizza_spese_settimana` or `analizza_spese_mese` for short-term budget control.
+   - `calcola_budget_residuo_settimana` when the user asks how much they can still spend this week.
    - `calcola_spese_fisse_mensili` when structural fixed costs may be blocking progress.
    - `genera_insight_settimanali` or `genera_insight_mensili` when the user wants advice relative to a saved goal.
 3. Base every recommendation on real signals: budget residual, heavy categories, recurring charges, fixed-versus-variable mix, and drift versus history.

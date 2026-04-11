@@ -880,6 +880,61 @@ def analizza_spese_settimana(payload: RichiestaAnalisiSettimana | None = None) -
     )
 
 
+def calcola_budget_residuo_settimana(payload: RichiestaAnalisiSettimana | None = None) -> str:
+    """Restituisce quanto resta del budget settimanale sottraendo al budget della settimana quanto e' gia' stato speso nel periodo."""
+    create_database()
+    resolved_payload = payload or RichiestaAnalisiSettimana()
+    window = resolve_week_window(
+        resolved_payload.settimana_iso,
+        start_date=resolved_payload.data_da,
+        end_date=resolved_payload.data_a,
+        label=resolved_payload.label_periodo,
+    )
+
+    with get_session() as session:
+        profile = _get_or_create_user_profile(session)
+        previous_budget = (profile.disponibile_mensile, profile.disponibile_settimanale)
+        _sync_budget_fields(profile)
+        if previous_budget != (profile.disponibile_mensile, profile.disponibile_settimanale):
+            session.add(profile)
+            session.commit()
+            session.refresh(profile)
+
+        week_movements = _fetch_movements_between(
+            session,
+            start_date=window["start_date"],
+            end_date=window["end_date"],
+        )
+
+    spent_total = _round_money(sum(abs(movement.importo) for movement in week_movements if movement.importo < 0)) or 0.0
+    weekly_budget = _round_money(profile.disponibile_settimanale)
+    residual = None if weekly_budget is None else _round_money(weekly_budget - spent_total)
+
+    return json.dumps(
+        {
+            "periodo": {
+                "label": window["label"],
+                "da": window["start_date"].isoformat(),
+                "a": window["end_date"].isoformat(),
+                "corrente": window["is_current"],
+            },
+            "campi_mancanti": _profile_missing_fields(profile),
+            "budget_settimanale": weekly_budget,
+            "spese_gia_fatte": spent_total,
+            "residuo_budget": residual,
+            "conteggio_spese": sum(1 for movement in week_movements if movement.importo < 0),
+            "top_spese": _top_expense_previews(week_movements, limit=resolved_payload.preview_limit),
+            "message": (
+                "Per la domanda su quanto resta da spendere nella settimana usa `residuo_budget`, "
+                "calcolato come `budget_settimanale - spese_gia_fatte` nel periodo selezionato. "
+                "Non usare le spese fisse mensili del profilo in questo calcolo."
+            ),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
 def analizza_spese_mese(payload: RichiestaAnalisiMese | None = None) -> str:
     """Analizza le spese di un mese specifico; se non indicato usa il mese corrente."""
     create_database()
@@ -1596,6 +1651,7 @@ ANALYSIS_TOOLS = [
     analizza_spese_per_categoria,
     analizza_spese_fisse,
     analizza_spese_settimana,
+    calcola_budget_residuo_settimana,
     analizza_spese_mese,
     analizza_spese_complessive,
     calcola_spese_fisse_mensili,
@@ -1614,6 +1670,7 @@ ROOT_TOOLS = [
     analizza_spese_per_categoria,
     analizza_spese_fisse,
     analizza_spese_settimana,
+    calcola_budget_residuo_settimana,
     analizza_spese_mese,
     analizza_spese_complessive,
     calcola_spese_fisse_mensili,

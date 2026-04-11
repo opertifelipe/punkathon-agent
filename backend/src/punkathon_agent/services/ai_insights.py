@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from calendar import monthrange
 from datetime import date, datetime, timezone
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -65,6 +65,50 @@ Contesto JSON:
         ),
     ]
 )
+
+_SINGLE_INSIGHT_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """Sei un analista di finanza personale brutalmente utile.
+
+Parli in italiano con tono giovane, sarcastico, un po' rude, ma mai insultante, discriminatorio o gratuitamente volgare.
+Il tuo focus e' il controllo delle finanze: budget, spese, margine, soldi che entrano e soldi che scappano.
+
+Devi generare esattamente un solo insight popup del tipo richiesto.
+
+Vincoli obbligatori:
+- usa solo i dati forniti nel contesto
+- non inventare numeri, percentuali o trend
+- il titolo deve essere breve, tagliente e specifico
+- la descrizione deve essere concreta, leggibile e ancorata a numeri o pattern presenti
+- la descrizione puo' svilupparsi in 2-4 frasi brevi, ma non deve diventare un muro di testo
+- evita consigli generici da guru improvvisato
+- se il tipo richiesto e' `success`, evidenzia un comportamento virtuoso o un segnale che mostra controllo
+- se il tipo richiesto e' `warning`, segnala il rischio, la perdita di controllo o la spesa che sta degenerando
+- evita di ripetere o riformulare questi titoli gia' usati: {existing_titles_json}
+- segui questo focus prioritario se presente: {focus_hint}
+- se i dati sono deboli, restituisci comunque un insight onesto che dica chiaramente dove manca controllo o evidenza
+- niente emoji
+"""
+        ),
+        (
+            "human",
+            """Genera un singolo insight popup.
+
+Tipo richiesto: {insight_type}
+
+Contesto JSON:
+{context_json}
+""",
+        ),
+    ]
+)
+
+_SIDEBAR_INSIGHT_TITLE_MAX_LENGTH = 72
+_SIDEBAR_INSIGHT_DESCRIPTION_MAX_LENGTH = 220
+_SINGLE_INSIGHT_TITLE_MAX_LENGTH = 72
+_SINGLE_INSIGHT_DESCRIPTION_MAX_LENGTH = 560
 
 
 def _month_start_months_ago(reference_date: date, months_ago: int) -> date:
@@ -187,10 +231,81 @@ def _build_recent_context(
     }
 
 
+def _load_sidebar_insights_context(
+    reference_date: date | None = None,
+    *,
+    user_id: int | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    create_database()
+    analysis_window = _last_three_month_window(reference_date)
+
+    with get_session() as session:
+        profile = _get_or_create_user_profile(session, user_id=user_id)
+        _sync_budget_fields(profile)
+        all_movements = _fetch_all_movements(session, user_id=user_id)
+        recent_movements = _fetch_movements_between(
+            session,
+            start_date=analysis_window["start_date"],
+            end_date=analysis_window["end_date"],
+            user_id=user_id,
+        )
+
+    context = _build_recent_context(
+        profile=profile,
+        recent_movements=recent_movements,
+        all_movements=all_movements,
+        analysis_window=analysis_window,
+    )
+    return context, analysis_window
+
+
+def get_sidebar_insights_availability(
+    reference_date: date | None = None,
+    *,
+    user_id: int | None = None,
+) -> dict[str, Any]:
+    create_database()
+    analysis_window = _last_three_month_window(reference_date)
+
+    with get_session() as session:
+        recent_movements = _fetch_movements_between(
+            session,
+            start_date=analysis_window["start_date"],
+            end_date=analysis_window["end_date"],
+            user_id=user_id,
+        )
+
+    return {
+        "has_recent_records": bool(recent_movements),
+        "recent_records_count": len(recent_movements),
+        "window_start": analysis_window["start_date"].isoformat(),
+        "window_end": analysis_window["end_date"].isoformat(),
+    }
+
+
 def _invoke_sidebar_insights_model(context: dict[str, Any]) -> SidebarInsightsLLMOutput:
     structured_model = build_chat_model().with_structured_output(SidebarInsightsLLMOutput)
     chain = _SIDEBAR_INSIGHTS_PROMPT | structured_model
     return chain.invoke({"context_json": json.dumps(context, ensure_ascii=False, indent=2)})
+
+
+async def _invoke_single_insight_model(
+    context: dict[str, Any],
+    *,
+    insight_type: Literal["success", "warning"],
+    focus_hint: str | None = None,
+    existing_titles: list[str] | None = None,
+) -> SidebarInsightDraft:
+    structured_model = build_chat_model().with_structured_output(SidebarInsightDraft)
+    chain = _SINGLE_INSIGHT_PROMPT | structured_model
+    return await chain.ainvoke(
+        {
+            "context_json": json.dumps(context, ensure_ascii=False, indent=2),
+            "insight_type": insight_type,
+            "focus_hint": (focus_hint or "").strip() or "Nessun focus aggiuntivo.",
+            "existing_titles_json": json.dumps(existing_titles or [], ensure_ascii=False),
+        }
+    )
 
 
 def _clean_text(value: str, *, max_length: int) -> str:
@@ -213,8 +328,11 @@ def _normalize_generated_insights(
         ("warning", payload.attention_points[:3]),
     ):
         for row in rows:
-            title = _clean_text(row.title, max_length=72)
-            description = _clean_text(row.description, max_length=220)
+            title = _clean_text(row.title, max_length=_SIDEBAR_INSIGHT_TITLE_MAX_LENGTH)
+            description = _clean_text(
+                row.description,
+                max_length=_SIDEBAR_INSIGHT_DESCRIPTION_MAX_LENGTH,
+            )
             if not title or not description:
                 continue
 
@@ -247,46 +365,133 @@ def _normalize_generated_insights(
     ]
 
 
+def _fallback_single_insight(
+    *,
+    insight_type: Literal["success", "warning"],
+    generated_at: datetime,
+) -> dict[str, str]:
+    if insight_type == "success":
+        return {
+            "id": uuid4().hex,
+            "type": "success",
+            "title": "Base meno disastrosa del previsto",
+            "description": (
+                "Non vedo abbastanza segnali forti per stappare lo champagne, "
+                "ma almeno qui non emerge un incendio finanziario clamoroso."
+            ),
+            "timestamp": generated_at.isoformat(),
+        }
+
+    return {
+        "id": uuid4().hex,
+        "type": "warning",
+        "title": "Controllo budget troppo moscio",
+        "description": (
+            "I dati recenti non bastano per inchiodare un problema preciso: "
+            "senza piu' movimenti chiari stai guidando le finanze un po' alla cieca."
+        ),
+        "timestamp": generated_at.isoformat(),
+    }
+
+
+def _normalize_single_insight(
+    draft: SidebarInsightDraft,
+    *,
+    insight_type: Literal["success", "warning"],
+    generated_at: datetime,
+) -> dict[str, str]:
+    title = _clean_text(draft.title, max_length=_SINGLE_INSIGHT_TITLE_MAX_LENGTH)
+    description = _clean_text(
+        draft.description,
+        max_length=_SINGLE_INSIGHT_DESCRIPTION_MAX_LENGTH,
+    )
+    if not title or not description:
+        return _fallback_single_insight(
+            insight_type=insight_type,
+            generated_at=generated_at,
+        )
+
+    return {
+        "id": uuid4().hex,
+        "type": insight_type,
+        "title": title,
+        "description": description,
+        "timestamp": generated_at.isoformat(),
+    }
+
+
 def generate_goal_based_sidebar_insights(
     reference_date: date | None = None,
     *,
     user_id: int | None = None,
 ) -> dict[str, Any]:
-    create_database()
-    analysis_window = _last_three_month_window(reference_date)
-
-    with get_session() as session:
-        profile = _get_or_create_user_profile(session, user_id=user_id)
-        _sync_budget_fields(profile)
-        all_movements = _fetch_all_movements(session, user_id=user_id)
-        recent_movements = _fetch_movements_between(
-            session,
-            start_date=analysis_window["start_date"],
-            end_date=analysis_window["end_date"],
-            user_id=user_id,
-        )
-
-    context = _build_recent_context(
-        profile=profile,
-        recent_movements=recent_movements,
-        all_movements=all_movements,
-        analysis_window=analysis_window,
+    context, analysis_window = _load_sidebar_insights_context(
+        reference_date,
+        user_id=user_id,
     )
-    llm_output = _invoke_sidebar_insights_model(context)
+    recent_records_count = int(context["movimenti_ultimi_3_mesi"]["conteggio_movimenti"] or 0)
     generated_at = datetime.now(timezone.utc)
+
+    if recent_records_count == 0:
+        return {
+            "generated_at": generated_at.isoformat(),
+            "window_start": analysis_window["start_date"].isoformat(),
+            "window_end": analysis_window["end_date"].isoformat(),
+            "has_recent_records": False,
+            "recent_records_count": 0,
+            "insights": [],
+        }
+
+    llm_output = _invoke_sidebar_insights_model(context)
 
     return {
         "generated_at": generated_at.isoformat(),
         "window_start": analysis_window["start_date"].isoformat(),
         "window_end": analysis_window["end_date"].isoformat(),
+        "has_recent_records": True,
+        "recent_records_count": recent_records_count,
         "insights": _normalize_generated_insights(llm_output, generated_at=generated_at),
     }
+
+
+async def generate_single_goal_based_insight(
+    *,
+    insight_type: Literal["success", "warning"],
+    focus_hint: str | None = None,
+    existing_titles: list[str] | None = None,
+    reference_date: date | None = None,
+    user_id: int | None = None,
+) -> dict[str, str]:
+    context, _analysis_window = _load_sidebar_insights_context(
+        reference_date,
+        user_id=user_id,
+    )
+    generated_at = datetime.now(timezone.utc)
+    recent_records_count = int(context["movimenti_ultimi_3_mesi"]["conteggio_movimenti"] or 0)
+    if recent_records_count == 0:
+        raise ValueError("Nessun movimento bancario registrato negli ultimi 3 mesi.")
+
+    draft = await _invoke_single_insight_model(
+        context,
+        insight_type=insight_type,
+        focus_hint=focus_hint,
+        existing_titles=existing_titles,
+    )
+    return _normalize_single_insight(
+        draft,
+        insight_type=insight_type,
+        generated_at=generated_at,
+    )
 
 
 __all__ = [
     "SidebarInsightDraft",
     "SidebarInsightsLLMOutput",
+    "_fallback_single_insight",
     "_last_three_month_window",
     "_normalize_generated_insights",
+    "_normalize_single_insight",
+    "get_sidebar_insights_availability",
+    "generate_single_goal_based_insight",
     "generate_goal_based_sidebar_insights",
 ]

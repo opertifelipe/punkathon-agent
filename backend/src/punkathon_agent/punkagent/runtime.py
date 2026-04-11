@@ -9,9 +9,10 @@ from typing import Any
 from deepagents import SubAgent, create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
 from dotenv import dotenv_values, load_dotenv
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, message_to_dict, messages_from_dict
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, messages_from_dict
 from langchain_openai import ChatOpenAI
 from openai import AuthenticationError
+from pydantic import BaseModel as PydanticBaseModel
 
 from punkathon_agent.db import create_database
 
@@ -43,16 +44,29 @@ def _resolve_openai_api_key() -> str | None:
     return file_key or env_key
 
 
+def _use_responses_api() -> bool:
+    file_values = dotenv_values(ENV_PATH)
+    raw_value = os.getenv("OPENAI_USE_RESPONSES_API")
+    if raw_value is None:
+        raw_value = file_values.get("OPENAI_USE_RESPONSES_API")
+    if raw_value is None:
+        return False
+    return str(raw_value).strip().casefold() in {"1", "true", "yes", "on"}
+
+
 def build_chat_model() -> ChatOpenAI:
     api_key = _resolve_openai_api_key()
-    return ChatOpenAI(
-        model="gpt-5.4",
-        api_key=api_key,
-        use_responses_api=True,
-        output_version="responses/v1",
-        reasoning={"summary": "auto", "effort": "medium"},
-        verbosity="low",
-    )
+    use_responses_api = _use_responses_api()
+    kwargs: dict[str, Any] = {
+        "model": "gpt-5.4",
+        "api_key": api_key,
+        "use_responses_api": use_responses_api,
+        "verbosity": "low",
+    }
+    if use_responses_api:
+        kwargs["output_version"] = "responses/v1"
+        kwargs["reasoning"] = {"summary": "auto", "effort": "medium"}
+    return ChatOpenAI(**kwargs)
 
 
 def _build_deepagents_backend() -> FilesystemBackend:
@@ -180,14 +194,60 @@ def _normalize_conversation(
     return normalized
 
 
+def _sanitize_serializable_message_value(value: Any) -> Any:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+
+    if isinstance(value, BaseMessage):
+        return _safe_message_to_dict(value)
+
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            if key == "parsed":
+                continue
+            sanitized[str(key)] = _sanitize_serializable_message_value(item)
+        return sanitized
+
+    if isinstance(value, (list, tuple, set)):
+        return [_sanitize_serializable_message_value(item) for item in value]
+
+    if isinstance(value, PydanticBaseModel):
+        return _sanitize_serializable_message_value(getattr(value, "__dict__", {}))
+
+    if hasattr(value, "isoformat") and callable(value.isoformat):
+        try:
+            return value.isoformat()
+        except TypeError:
+            pass
+
+    if hasattr(value, "__dict__"):
+        raw_dict = getattr(value, "__dict__", None)
+        if isinstance(raw_dict, dict):
+            return _sanitize_serializable_message_value(raw_dict)
+
+    return str(value)
+
+
+def _safe_message_to_dict(message: BaseMessage) -> dict[str, Any]:
+    raw_data = getattr(message, "__dict__", {})
+    sanitized_data = _sanitize_serializable_message_value(raw_data)
+    if not isinstance(sanitized_data, dict):
+        raise TypeError(f"Payload messaggio non serializzabile: {type(sanitized_data)!r}")
+    return {"type": message.type, "data": sanitized_data}
+
+
 def serialize_conversation(messages: list[BaseMessage | dict[str, Any]]) -> list[dict[str, Any]]:
     serialized: list[dict[str, Any]] = []
 
     for message in messages:
         if isinstance(message, BaseMessage):
-            serialized.append(message_to_dict(message))
+            serialized.append(_safe_message_to_dict(message))
         elif isinstance(message, dict):
-            serialized.append(message)
+            sanitized = _sanitize_serializable_message_value(message)
+            if not isinstance(sanitized, dict):
+                raise TypeError(f"Formato messaggio non serializzabile: {type(sanitized)!r}")
+            serialized.append(sanitized)
         else:
             raise TypeError(f"Formato messaggio non serializzabile: {type(message)!r}")
 

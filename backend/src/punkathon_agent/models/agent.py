@@ -52,7 +52,10 @@ class ProfiloUtenteUpdate(BaseModel):
     spese_fisse_essenziali_mensili: float | None = Field(
         default=None,
         ge=0,
-        description="Totale mensile delle spese fisse essenziali",
+        description=(
+            "Totale mensile delle spese fisse essenziali del profilo; "
+            "usa questo campo anche quando l'utente chiede in chat di modificare il valore delle spese"
+        ),
     )
     obiettivo: str | None = Field(default=None, description="Obiettivo finanziario espresso in linguaggio naturale")
     spese_irrinunciabili: str | None = Field(

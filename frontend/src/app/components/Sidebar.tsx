@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Target, AlertCircle, TrendingUp, Wallet, PiggyBank, X, FileText, Sparkles, Loader2, Settings, Moon, Sun } from 'lucide-react';
+import { Target, AlertCircle, TrendingUp, Wallet, PiggyBank, X, FileText, Loader2, Settings, Moon, Sun, Info } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -8,6 +8,9 @@ import {
   DialogTitle,
 } from './ui/dialog';
 import { Switch } from './ui/switch';
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
+
+const DEFAULT_USER_GOAL = 'Controllo delle finanze';
 
 interface SidebarProps {
   stipendio: number | null;
@@ -21,9 +24,7 @@ interface SidebarProps {
   isOpen: boolean;
   onClose: () => void;
   onOpenEstrattoConto: () => void;
-  onGenerateInsights: () => void;
   onDeleteAllTransactions: () => Promise<void>;
-  isGeneratingInsights: boolean;
   isDeletingAllTransactions: boolean;
   themeMode: 'light' | 'dark';
   onThemeChange: (themeMode: 'light' | 'dark') => void;
@@ -41,9 +42,7 @@ export function Sidebar({
   isOpen,
   onClose,
   onOpenEstrattoConto,
-  onGenerateInsights,
   onDeleteAllTransactions,
-  isGeneratingInsights,
   isDeletingAllTransactions,
   themeMode,
   onThemeChange,
@@ -78,9 +77,7 @@ export function Sidebar({
   };
 
   const handleGoalSave = () => {
-    if (goalInput.trim()) {
-      setUserGoal(goalInput.trim());
-    }
+    setUserGoal(goalInput.trim());
     setIsEditingGoal(false);
   };
 
@@ -94,11 +91,6 @@ export function Sidebar({
 
   const handleEstrattoConto = () => {
     onOpenEstrattoConto();
-    onClose();
-  };
-
-  const handleGenerateInsights = () => {
-    onGenerateInsights();
     onClose();
   };
 
@@ -149,7 +141,25 @@ export function Sidebar({
                 <Target className="w-5 h-5 text-gray-600 dark:text-slate-300" />
               </div>
               <div className="flex-1">
-                <div className="mb-1 text-xs font-medium text-gray-600 dark:text-slate-400">Obiettivo</div>
+                <div className="mb-1 flex items-center gap-2 text-xs font-medium text-gray-600 dark:text-slate-400">
+                  <span>Obiettivo</span>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        className="rounded-full p-0.5 text-gray-400 transition-colors hover:text-gray-600 dark:text-slate-500 dark:hover:text-slate-200"
+                        aria-label="Informazioni sull'obiettivo"
+                      >
+                        <Info className="h-3.5 w-3.5" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="right" sideOffset={8} className="max-w-64 leading-5">
+                      Puoi scrivere uno o piu' obiettivi nello stesso testo. Se lasci tutto vuoto, il default torna a
+                      {' '}
+                      &quot;{DEFAULT_USER_GOAL}&quot;.
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
                 {isEditingGoal ? (
                   <input
                     type="text"
@@ -159,7 +169,7 @@ export function Sidebar({
                     onKeyPress={(e) => e.key === 'Enter' && handleGoalSave()}
                     className="w-full border-b-2 border-gray-400 bg-transparent text-sm font-semibold text-gray-800 outline-none dark:border-slate-600 dark:text-slate-100"
                     autoFocus
-                    placeholder="Es: Comprare una macchina"
+                    placeholder="Es: macchina nuova, tagliare il superfluo, tenere d'occhio l'affitto"
                   />
                 ) : (
                   <div
@@ -169,10 +179,10 @@ export function Sidebar({
                       setGoalInput(userGoal || '');
                     }}
                   >
-                    {userGoal || 'Controllare le spese'}
+                    {userGoal || DEFAULT_USER_GOAL}
                   </div>
                 )}
-                <p className="mt-1 text-xs text-gray-400 dark:text-slate-500">Clicca per modificare</p>
+                <p className="mt-1 text-xs text-gray-400 dark:text-slate-500">Clicca per modificare o aggiungere piu' obiettivi</p>
               </div>
             </div>
           </div>
@@ -271,19 +281,6 @@ export function Sidebar({
             <div className="flex items-center gap-3">
               <FileText className="w-5 h-5" />
             <span className="text-sm">Estratto conto</span>
-            </div>
-          </button>
-
-          <button
-            onClick={handleGenerateInsights}
-            disabled={isGeneratingInsights}
-            className="w-full rounded-xl border border-gray-200 bg-gray-50 px-4 py-3.5 text-gray-700 shadow-sm transition-all hover:border-gray-300 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-800 dark:bg-slate-900/70 dark:text-slate-100 dark:hover:border-slate-700 dark:hover:bg-slate-900"
-          >
-            <div className="flex items-center gap-3">
-              {isGeneratingInsights ? <Loader2 className="w-5 h-5 animate-spin" /> : <Sparkles className="w-5 h-5" />}
-              <span className="text-sm">
-                {isGeneratingInsights ? 'Generazione insights...' : 'Genera nuovi insights'}
-              </span>
             </div>
           </button>
         </div>

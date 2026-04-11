@@ -8,9 +8,8 @@ from functools import lru_cache
 from typing import Any
 
 from dotenv import dotenv_values
-from langchain.agents import create_agent
-from langchain.agents.structured_output import ProviderStrategy
 from langchain_openai import ChatOpenAI
+from openai import AuthenticationError
 
 from punkathon_agent.models.finance import (
     BatchClassificazioneMovimenti,
@@ -65,6 +64,8 @@ MEDICAL_KEYWORDS = {
 SATISPAY_KEYWORDS = {"satispay"}
 PRELIEVI_KEYWORDS = {"prelievi", "prelievo", "prelievo sportello", "prelievo bancomat"}
 BONIFICI_KEYWORDS = {"bonific", "giroconti in uscita", "giroconto", "giroconti"}
+_CLASSIFICATION_BATCH_SIZE = 12
+_CLASSIFICATION_BATCH_RETRY_ATTEMPTS = 3
 
 
 def _resolve_openai_api_key() -> str | None:
@@ -74,26 +75,37 @@ def _resolve_openai_api_key() -> str | None:
     return file_key or env_key
 
 
+def _use_responses_api() -> bool:
+    file_values = dotenv_values(ENV_PATH)
+    raw_value = os.getenv("OPENAI_USE_RESPONSES_API")
+    if raw_value is None:
+        raw_value = file_values.get("OPENAI_USE_RESPONSES_API")
+    if raw_value is None:
+        return False
+    return str(raw_value).strip().casefold() in {"1", "true", "yes", "on"}
+
+
 def _build_classifier_model(
     model: str = "gpt-5.4",
     reasoning_effort: str = "low",
     verbosity: str = "low",
 ) -> ChatOpenAI:
-    return ChatOpenAI(
-        model=model,
-        api_key=_resolve_openai_api_key(),
-        reasoning_effort=reasoning_effort,
-        verbosity=verbosity,
-    )
+    use_responses_api = _use_responses_api()
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "api_key": _resolve_openai_api_key(),
+        "use_responses_api": use_responses_api,
+        "verbosity": verbosity,
+    }
+    if use_responses_api:
+        kwargs["output_version"] = "responses/v1"
+        kwargs["reasoning_effort"] = reasoning_effort
+    return ChatOpenAI(**kwargs)
 
 
 @lru_cache(maxsize=1)
-def _build_classification_agent() -> Any:
-    llm = _build_classifier_model()
-    return create_agent(
-        model=llm,
-        response_format=ProviderStrategy(BatchClassificazioneMovimenti),
-    )
+def _build_structured_classifier() -> Any:
+    return _build_classifier_model().with_structured_output(BatchClassificazioneMovimenti)
 
 
 def _build_classification_prompt(movimenti: list[dict[str, Any]]) -> str:
@@ -244,6 +256,84 @@ def _rule_based_classification(movimento: dict[str, Any]) -> ClassificazioneMovi
     return None
 
 
+def _invoke_batch_classification(movimenti: list[dict[str, Any]]) -> BatchClassificazioneMovimenti:
+    response = _build_structured_classifier().invoke(_build_classification_prompt(movimenti))
+    if not isinstance(response, BatchClassificazioneMovimenti):
+        raise ValueError("La classificazione AI non ha restituito un output strutturato valido.")
+    return response
+
+
+def _validate_batch_classification_response(
+    structured_response: BatchClassificazioneMovimenti,
+    movimenti: list[dict[str, Any]],
+) -> dict[int, ClassificazioneMovimento]:
+    requested_indices = {item["indice"] for item in movimenti}
+    seen_indices: set[int] = set()
+    resolved: dict[int, ClassificazioneMovimento] = {}
+
+    for item in structured_response.classificazioni:
+        if item.indice not in requested_indices:
+            raise ValueError(f"Indice di classificazione inatteso: {item.indice}.")
+        if item.indice in seen_indices:
+            raise ValueError(f"Indice duplicato nella classificazione AI: {item.indice}.")
+        if item.categoria == CategoriaSpesa.ENTRATE or item.macrocategoria == MacroCategoriaSpesa.ENTRATE:
+            raise ValueError(f"La classificazione AI ha marcato come entrata una spesa all'indice {item.indice}.")
+
+        seen_indices.add(item.indice)
+        resolved[item.indice] = ClassificazioneMovimento(
+            categoria=item.categoria,
+            macrocategoria=item.macrocategoria,
+        )
+
+    missing_indices = requested_indices - seen_indices
+    if missing_indices:
+        missing_text = ", ".join(str(item) for item in sorted(missing_indices))
+        raise ValueError(f"Classificazione AI incompleta. Mancano gli indici: {missing_text}.")
+
+    return resolved
+
+
+def _fallback_expense_classification(movimento: dict[str, Any]) -> ClassificazioneMovimento:
+    return _rule_based_classification(movimento) or _classification_from_category(CategoriaSpesa.ALTRO_NON_ESSENZIALE)
+
+
+def _classify_batch_with_retry(movimenti: list[dict[str, Any]]) -> dict[int, ClassificazioneMovimento]:
+    last_error: Exception | None = None
+
+    for _attempt in range(_CLASSIFICATION_BATCH_RETRY_ATTEMPTS):
+        try:
+            structured_response = _invoke_batch_classification(movimenti)
+            return _validate_batch_classification_response(structured_response, movimenti)
+        except AuthenticationError:
+            raise
+        except Exception as exc:
+            last_error = exc
+
+    if last_error is None:
+        raise RuntimeError("Classificazione batch fallita senza errore esplicito.")
+    raise last_error
+
+
+def _classify_batch_with_fallback(movimenti: list[dict[str, Any]]) -> dict[int, ClassificazioneMovimento]:
+    if not movimenti:
+        return {}
+
+    try:
+        return _classify_batch_with_retry(movimenti)
+    except AuthenticationError:
+        raise
+    except Exception:
+        if len(movimenti) == 1:
+            movimento = movimenti[0]
+            return {movimento["indice"]: _fallback_expense_classification(movimento)}
+
+        midpoint = max(1, len(movimenti) // 2)
+        resolved: dict[int, ClassificazioneMovimento] = {}
+        for chunk in (movimenti[:midpoint], movimenti[midpoint:]):
+            resolved.update(_classify_batch_with_fallback(chunk))
+        return resolved
+
+
 def classifica_movimenti(movimenti: list[dict[str, Any]]) -> list[ClassificazioneMovimento]:
     if not movimenti:
         return []
@@ -275,34 +365,11 @@ def classifica_movimenti(movimenti: list[dict[str, Any]]) -> list[Classificazion
         )
 
     if movimenti_da_classificare:
-        result = _build_classification_agent().invoke(
-            {"messages": [{"role": "user", "content": _build_classification_prompt(movimenti_da_classificare)}]}
-        )
-        structured_response = result.get("structured_response")
-        if not isinstance(structured_response, BatchClassificazioneMovimenti):
-            raise ValueError("La classificazione AI non ha restituito un output strutturato valido.")
-
-        requested_indices = {item["indice"] for item in movimenti_da_classificare}
-        seen_indices: set[int] = set()
-
-        for item in structured_response.classificazioni:
-            if item.indice not in requested_indices:
-                raise ValueError(f"Indice di classificazione inatteso: {item.indice}.")
-            if item.indice in seen_indices:
-                raise ValueError(f"Indice duplicato nella classificazione AI: {item.indice}.")
-            if item.categoria == CategoriaSpesa.ENTRATE or item.macrocategoria == MacroCategoriaSpesa.ENTRATE:
-                raise ValueError(f"La classificazione AI ha marcato come entrata una spesa all'indice {item.indice}.")
-
-            seen_indices.add(item.indice)
-            classificazioni[item.indice] = ClassificazioneMovimento(
-                categoria=item.categoria,
-                macrocategoria=item.macrocategoria,
-            )
-
-        missing_indices = requested_indices - seen_indices
-        if missing_indices:
-            missing_text = ", ".join(str(item) for item in sorted(missing_indices))
-            raise ValueError(f"Classificazione AI incompleta. Mancano gli indici: {missing_text}.")
+        for start in range(0, len(movimenti_da_classificare), _CLASSIFICATION_BATCH_SIZE):
+            batch = movimenti_da_classificare[start : start + _CLASSIFICATION_BATCH_SIZE]
+            resolved_batch = _classify_batch_with_fallback(batch)
+            for indice, classificazione in resolved_batch.items():
+                classificazioni[indice] = classificazione
 
     missing = [str(index) for index, item in enumerate(classificazioni) if item is None]
     if missing:

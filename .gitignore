@@ -212,3 +212,4 @@ data/
 *.pdf
 *.png
 *.env
+.claude

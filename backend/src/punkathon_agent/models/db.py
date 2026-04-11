@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 
 from sqlmodel import Field, SQLModel
 
-DEFAULT_USER_GOAL = "Controllare le spese"
+DEFAULT_USER_GOAL = "Controllo delle finanze"
 
 
 class PunkUser(SQLModel, table=True):

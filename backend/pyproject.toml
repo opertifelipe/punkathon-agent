@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "azure-ai-documentintelligence>=1.0.2",
     "deepagents>=0.4.12",
+    "elevenlabs>=2.42.0",
     "fastapi>=0.135.3",
     "jupyter>=1.1.1",
     "langchain>=1.2.14",

@@ -88,11 +88,26 @@ export interface GeneratedInsight {
   timestamp: string;
 }
 
+export interface GenerateSingleInsightPayload {
+  type: 'warning' | 'success';
+  focus_hint?: string;
+  existing_titles?: string[];
+}
+
 export interface InsightsResponse {
   generated_at: string;
   window_start: string;
   window_end: string;
+  has_recent_records: boolean;
+  recent_records_count: number;
   insights: GeneratedInsight[];
+}
+
+export interface InsightsAvailabilityResponse {
+  has_recent_records: boolean;
+  recent_records_count: number;
+  window_start: string;
+  window_end: string;
 }
 
 export interface StatementWeekOption {
@@ -239,6 +254,14 @@ async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function apiBlob(path: string, init?: RequestInit): Promise<Blob> {
+  const response = await apiFetch(path, init);
+  if (!response.ok) {
+    throw new Error(await readErrorDetail(response, `${init?.method ?? 'GET'} ${path}: ${response.status}`));
+  }
+  return response.blob();
+}
+
 function formatLocalDateForApi(value: Date): string {
   const year = value.getFullYear();
   const month = String(value.getMonth() + 1).padStart(2, '0');
@@ -341,6 +364,28 @@ export async function deleteAllTransactions(): Promise<StatementBulkDeleteRespon
 export async function generateInsights(): Promise<InsightsResponse> {
   return apiJson<InsightsResponse>('/insights/generate', {
     method: 'POST',
+  });
+}
+
+export async function fetchInsightsStatus(): Promise<InsightsAvailabilityResponse> {
+  return apiJson<InsightsAvailabilityResponse>('/insights/status');
+}
+
+export async function generateSingleInsight(
+  payload: GenerateSingleInsightPayload,
+): Promise<GeneratedInsight> {
+  return apiJson<GeneratedInsight>('/insights/generate-one', {
+    method: 'POST',
+    headers: buildAuthHeaders(undefined, { json: true }),
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function synthesizeInsightSpeech(text: string): Promise<Blob> {
+  return apiBlob('/insights/text-to-speech', {
+    method: 'POST',
+    headers: buildAuthHeaders(undefined, { json: true }),
+    body: JSON.stringify({ text }),
   });
 }
 
