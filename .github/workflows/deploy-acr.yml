@@ -2,17 +2,6 @@ name: Build and Push Aurora Image
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - .dockerignore
-      - Dockerfile
-      - pyproject.toml
-      - uv.lock
-      - backend/**
-      - frontend/**
-      - .github/workflows/deploy-acr.yml
 
 permissions:
   contents: read
