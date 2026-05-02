@@ -228,6 +228,7 @@ PUNKAGENT_ALLOWED_EMAILS=operti.felipe@proton.me
 PUNKAGENT_API_HOST=127.0.0.1
 PUNKAGENT_API_PORT=8000
 PUNKAGENT_FRONTEND_DIST=/app/frontend/dist
+PUNKAGENT_ENABLE_DOCS=true
 OPENAI_USE_RESPONSES_API=true
 AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=...
 AZURE_DOCUMENT_INTELLIGENCE_KEY=...
@@ -236,6 +237,7 @@ AZURE_DOCUMENT_INTELLIGENCE_KEY=...
 `PUNKAGENT_AUTH_SECRET` is required for authentication. Generate a long random value for every deployed environment.
 `DATABASE_URL` defaults to the local SQLite database. For Azure SQL, use a SQLAlchemy URL such as `mssql+pyodbc://...?...driver=ODBC+Driver+18+for+SQL+Server`.
 `PUNKAGENT_ALLOWED_EMAILS` is a comma-separated allowlist for signup and signin; the production container defaults to `operti.felipe@proton.me`.
+`PUNKAGENT_ENABLE_DOCS=false` disables `/docs`, `/redoc`, and `/openapi.json`; the production container defaults to disabled.
 
 ## Installation
 
@@ -377,6 +379,7 @@ OPENAI_API_KEY=sk-...
 PUNKAGENT_AUTH_SECRET=<long-random-secret>
 DATABASE_URL=<azure-sql-sqlalchemy-url>
 PUNKAGENT_ALLOWED_EMAILS=operti.felipe@proton.me
+PUNKAGENT_ENABLE_DOCS=false
 ```
 
 ## Example Prompts

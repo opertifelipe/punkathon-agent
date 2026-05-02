@@ -159,12 +159,26 @@ ITALIAN_MONTHS = [
     "Dicembre",
 ]
 
+ENABLE_DOCS_ENV_VAR = "PUNKAGENT_ENABLE_DOCS"
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def _env_flag(name: str, *, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+enable_docs = _env_flag(ENABLE_DOCS_ENV_VAR, default=True)
 
 app = FastAPI(
     title="Aurora API",
     version="0.1.0",
     description="API FastAPI per interrogare Aurora in modalita' classica o streaming.",
+    docs_url="/docs" if enable_docs else None,
+    redoc_url="/redoc" if enable_docs else None,
+    openapi_url="/openapi.json" if enable_docs else None,
 )
 
 
