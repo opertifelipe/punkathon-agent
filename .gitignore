@@ -211,6 +211,5 @@ __marimo__/
 /backend/db/
 data/
 *.pdf
-*.png
 *.env
 .claude
