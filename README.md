@@ -222,15 +222,20 @@ OPENAI_API_KEY=sk-...
 Optional variables:
 
 ```env
-PUNKAGENT_AUTH_SECRET=change-me
+DATABASE_URL=sqlite:///backend/db/movimenti_bancari.sqlite3
+PUNKAGENT_AUTH_SECRET=<long-random-secret>
+PUNKAGENT_ALLOWED_EMAILS=operti.felipe@proton.me
 PUNKAGENT_API_HOST=127.0.0.1
 PUNKAGENT_API_PORT=8000
+PUNKAGENT_FRONTEND_DIST=/app/frontend/dist
 OPENAI_USE_RESPONSES_API=true
 AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=...
 AZURE_DOCUMENT_INTELLIGENCE_KEY=...
 ```
 
-`PUNKAGENT_AUTH_SECRET` is recommended if you use real authentication. Without it, the project falls back to a development secret.
+`PUNKAGENT_AUTH_SECRET` is required for authentication. Generate a long random value for every deployed environment.
+`DATABASE_URL` defaults to the local SQLite database. For Azure SQL, use a SQLAlchemy URL such as `mssql+pyodbc://...?...driver=ODBC+Driver+18+for+SQL+Server`.
+`PUNKAGENT_ALLOWED_EMAILS` is a comma-separated allowlist for signup and signin; the production container defaults to `operti.felipe@proton.me`.
 
 ## Installation
 
@@ -353,6 +358,25 @@ Frontend build:
 ```bash
 cd frontend
 npm run build
+```
+
+## Container Build
+
+The root `Dockerfile` builds the React frontend, installs the FastAPI backend, includes the Microsoft ODBC Driver 18 needed by Azure SQL, and serves the frontend from the same container.
+
+Build locally:
+
+```bash
+docker build -t aurora:local .
+```
+
+At runtime, configure at least:
+
+```env
+OPENAI_API_KEY=sk-...
+PUNKAGENT_AUTH_SECRET=<long-random-secret>
+DATABASE_URL=<azure-sql-sqlalchemy-url>
+PUNKAGENT_ALLOWED_EMAILS=operti.felipe@proton.me
 ```
 
 ## Example Prompts

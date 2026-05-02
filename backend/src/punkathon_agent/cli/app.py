@@ -11,6 +11,10 @@ from typing import Any
 import typer
 from dotenv import load_dotenv
 
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+ENV_PATH = PROJECT_ROOT / ".env"
+load_dotenv(ENV_PATH)
+
 from punkathon_agent.db import DB_PATH, get_session, rebuild_database
 from punkathon_agent.punkagent import (
     get_punk_agent,
@@ -18,7 +22,6 @@ from punkathon_agent.punkagent import (
     run_agent_turn_streaming,
     supported_attachment_formats,
 )
-from punkathon_agent.punkagent.constants import PROJECT_ROOT
 from punkathon_agent.services.users import resolve_default_cli_user
 
 app = typer.Typer(
@@ -33,7 +36,7 @@ CLEAR_ATTACHMENTS_COMMANDS = {"/clear", "/clear-attachments"}
 HELP_COMMANDS = {"/help", "/?"}
 REASONING_COLOR = typer.colors.BLUE
 ANSWER_COLOR = typer.colors.GREEN
-CLI_COMMANDS = {"api", "chat", "graph", "rebuild-db"}
+CLI_COMMANDS = {"api", "chat", "create-db", "graph", "rebuild-db"}
 
 
 class GraphFormat(StrEnum):
@@ -203,7 +206,6 @@ def _resolve_default_cli_context() -> CliDefaultContext:
 
 
 def _run_chat_session(prompt: str | None = None) -> None:
-    load_dotenv()
     cli_context = _resolve_default_cli_context()
     agent = get_punk_agent()
     conversation: list[Any] = []
@@ -257,7 +259,6 @@ def _build_graph_artifact(graph_format: GraphFormat, output_path: Path | None, s
     if graph_format == GraphFormat.PNG and stdout:
         raise typer.BadParameter("--stdout non e' supportato con --format png.")
 
-    load_dotenv()
     graph = get_punk_agent().get_graph()
 
     if graph_format == GraphFormat.ASCII:
@@ -315,6 +316,23 @@ def graph(
         return
 
     typer.echo(f"Grafo LangGraph salvato in: {artifact}")
+
+
+@app.command("create-db")
+def create_db() -> None:
+    """Crea le tabelle del database configurato senza cancellare i dati."""
+    from sqlalchemy.engine import make_url
+
+    from punkathon_agent.db import DATABASE_URL, create_database
+
+    try:
+        create_database()
+    except Exception as exc:
+        typer.secho(f"Errore durante la creazione del database: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+
+    database_target = make_url(DATABASE_URL).render_as_string(hide_password=True)
+    typer.echo(f"Tabelle database verificate/create in: {database_target}")
 
 
 @app.command("rebuild-db")

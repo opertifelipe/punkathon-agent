@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 
 AUTH_SECRET_ENV_VAR = "PUNKAGENT_AUTH_SECRET"
-AUTH_SECRET_FALLBACK = "punkagent-dev-secret-change-me-32bytes-minimum"
+ALLOWED_EMAILS_ENV_VAR = "PUNKAGENT_ALLOWED_EMAILS"
 AUTH_TOKEN_LIFETIME_DAYS = 30
 PASSWORD_HASH_ITERATIONS = 600_000
 
@@ -19,8 +19,25 @@ def normalize_email(value: str) -> str:
     return value.strip().casefold()
 
 
+def allowed_auth_emails() -> set[str]:
+    raw_value = os.getenv(ALLOWED_EMAILS_ENV_VAR, "")
+    return {
+        normalize_email(email)
+        for email in raw_value.replace(";", ",").split(",")
+        if normalize_email(email)
+    }
+
+
+def is_email_allowed(email: str) -> bool:
+    allowed_emails = allowed_auth_emails()
+    return not allowed_emails or normalize_email(email) in allowed_emails
+
+
 def _auth_secret() -> str:
-    return os.getenv(AUTH_SECRET_ENV_VAR, AUTH_SECRET_FALLBACK)
+    secret = os.getenv(AUTH_SECRET_ENV_VAR, "").strip()
+    if not secret:
+        raise RuntimeError(f"{AUTH_SECRET_ENV_VAR} deve essere configurata.")
+    return secret
 
 
 def hash_password(password: str) -> str:
@@ -78,10 +95,14 @@ def decode_access_token(token: str) -> int:
 
 
 __all__ = [
+    "ALLOWED_EMAILS_ENV_VAR",
+    "AUTH_SECRET_ENV_VAR",
     "AUTH_TOKEN_LIFETIME_DAYS",
+    "allowed_auth_emails",
     "create_access_token",
     "decode_access_token",
     "hash_password",
+    "is_email_allowed",
     "normalize_email",
     "verify_password",
 ]

@@ -23,6 +23,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("chat", result.output)
         self.assertIn("api", result.output)
+        self.assertIn("create-db", result.output)
         self.assertIn("rebuild-db", result.output)
 
     def test_api_subcommand_delegates_to_api_main(self) -> None:

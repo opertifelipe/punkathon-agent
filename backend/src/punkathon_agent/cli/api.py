@@ -5,6 +5,7 @@ import json
 import os
 from contextlib import suppress
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -12,13 +13,21 @@ from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from jwt import ExpiredSignatureError, InvalidTokenError
 from openai import AuthenticationError
 from pydantic import BaseModel, Field, field_validator
 from sqlmodel import Session, select
 from sqlalchemy import func
 
-from punkathon_agent.auth import create_access_token, decode_access_token, hash_password, normalize_email, verify_password
+from punkathon_agent.auth import (
+    create_access_token,
+    decode_access_token,
+    hash_password,
+    is_email_allowed,
+    normalize_email,
+    verify_password,
+)
 from punkathon_agent.db import get_session
 from punkathon_agent.models.api import (
     ChatRequest,
@@ -159,6 +168,21 @@ app = FastAPI(
 )
 
 
+class ApiPrefixMiddleware:
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] == "http":
+            path = str(scope.get("path", ""))
+            if path == "/api":
+                scope = {**scope, "path": "/"}
+            elif path.startswith("/api/"):
+                scope = {**scope, "path": path[4:]}
+
+        await self.app(scope, receive, send)
+
+
 AUTO_ATTACHMENT_IMPORT_PROMPT = (
     "Import automatico obbligatorio degli allegati di questa richiesta. "
     "Leggi tutti gli allegati, estrai tutti i movimenti bancari riconoscibili e salvali subito con `aggiungi_movimenti`. "
@@ -184,6 +208,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(ApiPrefixMiddleware)
 
 
 def _inline_attachments_payload(attachments: list[Any]) -> list[dict[str, str]]:
@@ -306,6 +331,11 @@ def _serialize_user(user: PunkUser) -> AuthUserResponse:
         cognome=user.cognome,
         eta=user.eta,
     )
+
+
+def _ensure_auth_email_allowed(email: str) -> None:
+    if not is_email_allowed(email):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Accesso non abilitato per questa email.")
 
 
 def _month_label(year: int, month: int) -> str:
@@ -506,6 +536,8 @@ def health() -> dict[str, str]:
 
 @app.post("/auth/signup", response_model=AuthSessionResponse, status_code=201)
 def signup(payload: SignupRequest, session: Session = Depends(get_db)) -> AuthSessionResponse:
+    _ensure_auth_email_allowed(payload.email)
+
     existing = session.exec(select(PunkUser).where(PunkUser.email == payload.email)).first()
     if existing is not None:
         raise HTTPException(status_code=409, detail="Esiste gia' un account con questa email.")
@@ -534,6 +566,8 @@ def signup(payload: SignupRequest, session: Session = Depends(get_db)) -> AuthSe
 
 @app.post("/auth/signin", response_model=AuthSessionResponse)
 def signin(payload: SigninRequest, session: Session = Depends(get_db)) -> AuthSessionResponse:
+    _ensure_auth_email_allowed(payload.email)
+
     user = session.exec(select(PunkUser).where(PunkUser.email == payload.email)).first()
     if user is None or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenziali non valide.")
@@ -1006,6 +1040,21 @@ def delete_all_statement_transactions(
     session.commit()
 
     return StatementBulkDeleteResponse(deleted=True, deleted_count=deleted_count)
+
+
+def _mount_frontend_if_configured() -> None:
+    raw_dist_path = os.getenv("PUNKAGENT_FRONTEND_DIST", "").strip()
+    if not raw_dist_path:
+        return
+
+    dist_path = Path(raw_dist_path)
+    if not (dist_path / "index.html").is_file():
+        return
+
+    app.mount("/", StaticFiles(directory=dist_path, html=True), name="frontend")
+
+
+_mount_frontend_if_configured()
 
 
 def main() -> None:

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+import os
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
-from punkathon_agent.auth import create_access_token, hash_password
+from punkathon_agent.auth import AUTH_SECRET_ENV_VAR, create_access_token, hash_password
 from punkathon_agent.cli.api import app, get_db
 from punkathon_agent.db import engine as app_engine
 from punkathon_agent.models.db import DEFAULT_USER_GOAL, MovimentoBancario, PunkUser, Utente
@@ -15,6 +17,11 @@ from punkathon_agent.models.db import DEFAULT_USER_GOAL, MovimentoBancario, Punk
 
 class StatementApiTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.auth_secret_patch = patch.dict(
+            os.environ,
+            {AUTH_SECRET_ENV_VAR: "test-auth-secret-32-bytes-minimum"},
+        )
+        self.auth_secret_patch.start()
         self.engine = create_engine(
             "sqlite://",
             connect_args={"check_same_thread": False},
@@ -100,6 +107,7 @@ class StatementApiTests(unittest.TestCase):
         app.dependency_overrides.clear()
         self.engine.dispose()
         app_engine.dispose()
+        self.auth_secret_patch.stop()
 
     def test_statement_page_uses_same_five_week_windows_as_home(self) -> None:
         response = self.client.get(

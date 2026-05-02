@@ -1,0 +1,52 @@
+name: Build and Push Aurora Image
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .dockerignore
+      - Dockerfile
+      - pyproject.toml
+      - uv.lock
+      - backend/**
+      - frontend/**
+      - .github/workflows/deploy-acr.yml
+
+permissions:
+  contents: read
+
+env:
+  ACR_NAME: auroracr
+  IMAGE_NAME: aurora
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Login to Azure Container Registry
+        run: az acr login --name "$ACR_NAME"
+
+      - name: Build image
+        run: |
+          image="${ACR_NAME}.azurecr.io/${IMAGE_NAME}"
+          docker build \
+            --tag "${image}:${GITHUB_SHA}" \
+            --tag "${image}:latest" \
+            .
+
+      - name: Push image
+        run: |
+          image="${ACR_NAME}.azurecr.io/${IMAGE_NAME}"
+          docker push "${image}:${GITHUB_SHA}"
+          docker push "${image}:latest"

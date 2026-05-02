@@ -19,6 +19,7 @@ dependencies = [
     "langgraph-cli[inmem]>=0.4.19",
     "notebook>=7.5.5",
     "pydantic>=2.12.5",
+    "pyodbc>=5.2.0",
     "pyjwt>=2.12.1",
     "pypdf>=6.9.2",
     "python-dotenv>=1.2.2",
