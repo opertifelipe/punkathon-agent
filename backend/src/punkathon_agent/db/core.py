@@ -283,6 +283,17 @@ def create_database() -> Path | str:
     return DB_PATH if _is_sqlite_database() else DATABASE_URL
 
 
+def drop_application_tables() -> None:
+    SQLModel.metadata.drop_all(
+        engine,
+        tables=[
+            MovimentoBancario.__table__,
+            Utente.__table__,
+            PunkUser.__table__,
+        ],
+    )
+
+
 def delete_database() -> list[Path]:
     if not _is_sqlite_database():
         raise RuntimeError("delete_database e' supportato solo con il database SQLite locale.")
@@ -307,6 +318,14 @@ def rebuild_database() -> Path | str:
     return create_database()
 
 
+def recreate_database() -> Path | str:
+    if _is_sqlite_database():
+        return rebuild_database()
+
+    drop_application_tables()
+    return create_database()
+
+
 def get_session() -> Session:
     create_database()
     return Session(engine, expire_on_commit=False)
@@ -327,8 +346,10 @@ __all__ = [
     "Utente",
     "create_database",
     "delete_database",
+    "drop_application_tables",
     "engine",
     "get_session",
     "main",
+    "recreate_database",
     "rebuild_database",
 ]

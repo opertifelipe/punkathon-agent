@@ -26,6 +26,12 @@ class CliTests(unittest.TestCase):
         self.assertIn("create-db", result.output)
         self.assertIn("rebuild-db", result.output)
 
+    def test_create_db_help_warns_that_tables_are_recreated(self) -> None:
+        result = self.runner.invoke(get_command(cli_app), ["create-db", "--help"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Cancella e ricrea", result.output)
+
     def test_api_subcommand_delegates_to_api_main(self) -> None:
         with patch("punkathon_agent.cli.api.main") as api_main:
             result = self.runner.invoke(get_command(cli_app), ["api"])

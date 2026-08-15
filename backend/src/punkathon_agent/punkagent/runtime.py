@@ -58,7 +58,7 @@ def build_chat_model() -> ChatOpenAI:
     api_key = _resolve_openai_api_key()
     use_responses_api = _use_responses_api()
     kwargs: dict[str, Any] = {
-        "model": "gpt-5.4",
+        "model": "gpt-5.4-mini",
         "api_key": api_key,
         "use_responses_api": use_responses_api,
         "verbosity": "low",

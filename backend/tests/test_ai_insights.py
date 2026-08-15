@@ -197,10 +197,13 @@ class AiInsightsServiceTests(unittest.TestCase):
 
 class AiInsightsApiTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.allowlist_patcher = patch("punkathon_agent.cli.api.is_email_allowed", return_value=True)
+        self.allowlist_patcher.start()
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
         self.client.close()
+        self.allowlist_patcher.stop()
 
     @patch("punkathon_agent.cli.api.generate_goal_based_sidebar_insights")
     def test_generate_insights_endpoint_returns_payload(self, mocked_generate: unittest.mock.Mock) -> None:

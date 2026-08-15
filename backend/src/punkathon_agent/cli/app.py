@@ -320,19 +320,19 @@ def graph(
 
 @app.command("create-db")
 def create_db() -> None:
-    """Crea le tabelle del database configurato senza cancellare i dati."""
+    """Cancella e ricrea le tabelle del database configurato."""
     from sqlalchemy.engine import make_url
 
-    from punkathon_agent.db import DATABASE_URL, create_database
+    from punkathon_agent.db import DATABASE_URL, recreate_database
 
     try:
-        create_database()
+        recreate_database()
     except Exception as exc:
-        typer.secho(f"Errore durante la creazione del database: {exc}", fg=typer.colors.RED)
+        typer.secho(f"Errore durante la ricreazione del database: {exc}", fg=typer.colors.RED)
         raise typer.Exit(code=1) from exc
 
     database_target = make_url(DATABASE_URL).render_as_string(hide_password=True)
-    typer.echo(f"Tabelle database verificate/create in: {database_target}")
+    typer.echo(f"Tabelle database cancellate e ricreate in: {database_target}")
 
 
 @app.command("rebuild-db")
