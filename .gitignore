@@ -213,3 +213,6 @@ data/
 *.pdf
 *.env
 .claude
+
+# JavaScript dependencies
+node_modules/

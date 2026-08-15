@@ -14,16 +14,16 @@ from punkathon_agent.db import engine as app_engine
 
 
 class AuthAllowlistTests(unittest.TestCase):
-    def test_email_allowlist_is_disabled_when_env_is_empty(self) -> None:
+    def test_email_allowlist_rejects_when_env_is_empty(self) -> None:
         with patch.dict(os.environ, {ALLOWED_EMAILS_ENV_VAR: ""}):
-            self.assertTrue(is_email_allowed("anyone@example.com"))
+            self.assertFalse(is_email_allowed("anyone@example.com"))
 
     def test_email_allowlist_accepts_only_configured_addresses(self) -> None:
         with patch.dict(
             os.environ,
-            {ALLOWED_EMAILS_ENV_VAR: "operti.felipe@proton.me, Alice@Example.com"},
+            {ALLOWED_EMAILS_ENV_VAR: "owner@example.com, Alice@Example.com"},
         ):
-            self.assertTrue(is_email_allowed("OPERTI.FELIPE@proton.me"))
+            self.assertTrue(is_email_allowed("OWNER@EXAMPLE.COM"))
             self.assertTrue(is_email_allowed("alice@example.com"))
             self.assertFalse(is_email_allowed("bob@example.com"))
 
@@ -45,7 +45,7 @@ class AuthAllowlistTests(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
-                    ALLOWED_EMAILS_ENV_VAR: "operti.felipe@proton.me",
+                    ALLOWED_EMAILS_ENV_VAR: "owner@example.com",
                     AUTH_SECRET_ENV_VAR: "test-auth-secret-32-bytes-minimum",
                 },
             ):

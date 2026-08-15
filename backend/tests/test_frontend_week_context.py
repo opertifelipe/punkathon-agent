@@ -46,8 +46,8 @@ class FrontendWeekContextTests(unittest.TestCase):
         app.dependency_overrides[get_current_user] = lambda: PunkUser(
             id=1,
             email="frontend@example.com",
-            nome="Felipe",
-            cognome="Operti",
+            nome="Mario",
+            cognome="Rossi",
             eta=33,
             password_hash="not-used-in-tests",
         )
@@ -87,9 +87,9 @@ class FrontendWeekContextTests(unittest.TestCase):
         mocked_snapshot.return_value = {
             "utente_autenticato": {
                 "id": 1,
-                "nome": "Felipe",
-                "cognome": "Operti",
-                "nome_completo": "Felipe Operti",
+                "nome": "Mario",
+                "cognome": "Rossi",
+                "nome_completo": "Mario Rossi",
                 "eta": 33,
             },
             "conteggio_movimenti_database": 0,

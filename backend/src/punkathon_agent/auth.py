@@ -30,7 +30,7 @@ def allowed_auth_emails() -> set[str]:
 
 def is_email_allowed(email: str) -> bool:
     allowed_emails = allowed_auth_emails()
-    return not allowed_emails or normalize_email(email) in allowed_emails
+    return bool(allowed_emails) and normalize_email(email) in allowed_emails
 
 
 def _auth_secret() -> str:
