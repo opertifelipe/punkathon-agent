@@ -86,7 +86,7 @@ def _use_responses_api() -> bool:
 
 
 def _build_classifier_model(
-    model: str = "gpt-5.4",
+    model: str = "gpt-5.4-mini",
     reasoning_effort: str = "low",
     verbosity: str = "low",
 ) -> ChatOpenAI:

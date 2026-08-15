@@ -8,9 +8,11 @@ from .core import (
     DEFAULT_DATABASE_URL,
     create_database,
     delete_database,
+    drop_application_tables,
     engine,
     get_session,
     main,
+    recreate_database,
     rebuild_database,
 )
 
@@ -22,8 +24,10 @@ __all__ = [
     "DEFAULT_DATABASE_URL",
     "create_database",
     "delete_database",
+    "drop_application_tables",
     "engine",
     "get_session",
     "main",
+    "recreate_database",
     "rebuild_database",
 ]
